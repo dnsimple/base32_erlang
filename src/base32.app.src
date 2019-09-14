@@ -1,6 +1,6 @@
 {application, base32,
  [
-  {description, ""},
+  {description, "Erlang implementation of base32 encoding and decoding"},
   {vsn, "0.1"},
   {registered, []},
   {applications, [
