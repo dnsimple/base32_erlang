@@ -1,2 +1,3 @@
 _build
+.tool-versions
 rebar3
