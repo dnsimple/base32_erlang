@@ -6,6 +6,8 @@ all: deps compile
 $(REBAR):
 	wget $(REBAR_URL) && chmod +x rebar3
 
+build: compile
+
 compile: $(REBAR)
 	@$(REBAR) compile
 
