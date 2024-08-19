@@ -25,4 +25,5 @@ fresh:
 	rm -fr _build/*
 
 test: $(REBAR) all
+	@$(REBAR) dialyzer
 	@$(REBAR) eunit skip_deps=true
