@@ -6,6 +6,8 @@ all: deps compile
 $(REBAR):
 	wget $(REBAR_URL) && chmod +x rebar3
 
+build: compile
+
 compile: $(REBAR)
 	@$(REBAR) compile
 
@@ -23,4 +25,5 @@ fresh:
 	rm -fr _build/*
 
 test: $(REBAR) all
+	@$(REBAR) dialyzer
 	@$(REBAR) eunit skip_deps=true

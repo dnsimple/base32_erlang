@@ -1,4 +1,6 @@
-#base32
+# base32_erlang
+
+![CI](https://github.com/dnsimple/base32_erlang/actions/workflows/ci.yml/badge.svg)
 
 **License: Apache 2**
 
