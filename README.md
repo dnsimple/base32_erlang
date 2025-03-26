@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/dnsimple/base32_erlang/actions/workflows/ci.yml/badge.svg)
 
-```
+```erlang
 1> X = <<"foobar">>.
 <<"foobar">>
 2> X0 = base32:encode(X).
