@@ -1,29 +1,28 @@
-REBAR:=$(shell which rebar3 || echo ./rebar3)
-REBAR_URL:="https://s3.amazonaws.com/rebar3/rebar3"
+all: build
 
-all: deps compile
+.PHONY: build
+build:
+	rebar3 compile
 
-$(REBAR):
-	wget $(REBAR_URL) && chmod +x rebar3
+.PHONY: doc
+doc:
+	rebar3 edoc
 
-build: compile
+.PHONY: clean
+clean:
+	rebar3 clean
+	@rm -rf doc
 
-compile: $(REBAR)
-	@$(REBAR) compile
+.PHONY: fresh
+fresh: clean
+	rm -rf _build
 
-deps: $(REBAR)
-	@$(REBAR) get-deps
+.PHONY: test
+test: all
+	rebar3 fmt --check
+	rebar3 eunit
+	rebar3 do cover, covertool generate
 
-doc: $(REBAR)
-	@$(REBAR) doc skip_deps=true
-
-clean: $(REBAR)
-	@$(REBAR) clean
-	@rm -fr doc/*
-
-fresh:
-	rm -fr _build/*
-
-test: $(REBAR) all
-	@$(REBAR) dialyzer
-	@$(REBAR) eunit skip_deps=true
+.PHONY: format
+format: build
+	rebar3 fmt
