@@ -17,12 +17,33 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
+-if(?OTP_RELEASE >= 27).
+-define(MODULEDOC(Str), -moduledoc(Str)).
+-define(DOC(Str), -doc(Str)).
+-else.
+-define(MODULEDOC(Str), -compile([])).
+-define(DOC(Str), -compile([])).
+-endif.
 -module(base32).
+?MODULEDOC("""
+Base32 encoding and decoding
+""").
 -export([encode/1, encode/2, decode/1, decode/2]).
 
+?DOC(#{equiv => encode(Bin, [])}).
+-spec encode(binary()) -> <<_:_*32>>.
 encode(Bin) when is_binary(Bin) -> encode(Bin, []);
 encode(List) when is_list(List) -> encode(list_to_binary(List), []).
 
+?DOC("""
+Encode a binary into base 32.
+
+Options:
+- `hex`: whether to use hexadecimal encoding. Defaults to `false`.
+- `lower`: whether to use lowercase encoding. Defaults to `false`.
+- `nopad`: whether to skip padding. Defaults to `false`.
+""").
+-spec encode(binary(), proplists:proplist()) -> <<_:_*32>>.
 encode(Bin, Opts) when is_binary(Bin) andalso is_list(Opts) ->
     Hex = proplists:get_bool(hex, Opts),
     Lower = proplists:get_bool(lower, Opts),
@@ -76,9 +97,18 @@ hex_enc(Lower, I) when is_integer(I) andalso I >= 10 andalso I =< 31 ->
         false -> I + 55
     end.
 
+?DOC(#{equiv => decode(Bin, [])}).
+-spec decode(<<_:_*32>>) -> binary().
 decode(Bin) when is_binary(Bin) -> decode(Bin, []);
 decode(List) when is_list(List) -> decode(list_to_binary(List), []).
 
+?DOC("""
+Encode a binary into base 32.
+
+Options:
+- `hex`: whether decode the input as hexadecimal encoding. Defaults to `false`.
+""").
+-spec decode(<<_:_*32>>, proplists:proplist()) -> binary().
 decode(Bin, Opts) when is_binary(Bin) andalso is_list(Opts) ->
     Fun =
         case proplists:get_bool(hex, Opts) of
