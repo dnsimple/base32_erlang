@@ -1,6 +1,10 @@
 # base32_erlang
 
-![CI](https://github.com/dnsimple/base32_erlang/actions/workflows/ci.yml/badge.svg)
+[![Build Status](https://github.com/dnsimple/base32_erlang/actions/workflows/ci.yml/badge.svg)](https://github.com/dnsimple/base32_erlang/actions/workflows/ci.yml)
+[![Module Version](https://img.shields.io/hexpm/v/base32.svg)](https://hex.pm/packages/base32)
+[![Hex Docs](https://img.shields.io/badge/hex-docs-lightgreen.svg)](https://hexdocs.pm/base32/)
+[![Hex Downloads](https://img.shields.io/hexpm/dt/base32.svg?maxAge=2592000)](https://hex.pm/packages/base32)
+[![Coverage Status](https://coveralls.io/repos/github/dnsimple/base32_erlang/badge.svg?branch=main)](https://coveralls.io/github/dnsimple/base32_erlang?branch=main)
 
 ```erlang
 1> X = <<"foobar">>.
