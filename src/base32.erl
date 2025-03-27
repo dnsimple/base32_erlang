@@ -17,16 +17,33 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
+-if(?OTP_RELEASE >= 27).
+-define(MODULEDOC(Str), -moduledoc(Str)).
+-define(DOC(Str), -doc(Str)).
+-else.
+-define(MODULEDOC(Str), -compile([])).
+-define(DOC(Str), -compile([])).
+-endif.
 -module(base32).
+?MODULEDOC("""
+Base32 encoding and decoding
+""").
 -export([encode/1, encode/2, decode/1, decode/2]).
 
--ifdef(TEST).
--include_lib("eunit/include/eunit.hrl").
--endif.
-
+?DOC(#{equiv => encode(Bin, [])}).
+-spec encode(binary()) -> <<_:_*32>>.
 encode(Bin) when is_binary(Bin) -> encode(Bin, []);
 encode(List) when is_list(List) -> encode(list_to_binary(List), []).
 
+?DOC("""
+Encode a binary into base 32.
+
+Options:
+- `hex`: whether to use hexadecimal encoding. Defaults to `false`.
+- `lower`: whether to use lowercase encoding. Defaults to `false`.
+- `nopad`: whether to skip padding. Defaults to `false`.
+""").
+-spec encode(binary(), proplists:proplist()) -> <<_:_*32>>.
 encode(Bin, Opts) when is_binary(Bin) andalso is_list(Opts) ->
     Hex = proplists:get_bool(hex, Opts),
     Lower = proplists:get_bool(lower, Opts),
@@ -80,9 +97,18 @@ hex_enc(Lower, I) when is_integer(I) andalso I >= 10 andalso I =< 31 ->
         false -> I + 55
     end.
 
+?DOC(#{equiv => decode(Bin, [])}).
+-spec decode(<<_:_*32>>) -> binary().
 decode(Bin) when is_binary(Bin) -> decode(Bin, []);
 decode(List) when is_list(List) -> decode(list_to_binary(List), []).
 
+?DOC("""
+Encode a binary into base 32.
+
+Options:
+- `hex`: whether decode the input as hexadecimal encoding. Defaults to `false`.
+""").
+-spec decode(<<_:_*32>>, proplists:proplist()) -> binary().
 decode(Bin, Opts) when is_binary(Bin) andalso is_list(Opts) ->
     Fun =
         case proplists:get_bool(hex, Opts) of
@@ -113,120 +139,3 @@ std_dec(I) when I >= $A andalso I =< $Z -> I - $A.
 hex_dec(I) when I >= $0 andalso I =< $9 -> I - 48;
 hex_dec(I) when I >= $a andalso I =< $z -> I - 87;
 hex_dec(I) when I >= $A andalso I =< $Z -> I - 55.
-
--ifdef(TEST).
-
-std_cases() ->
-    [
-        {<<"">>, <<"">>},
-        {<<"f">>, <<"MY======">>},
-        {<<"fo">>, <<"MZXQ====">>},
-        {<<"foo">>, <<"MZXW6===">>},
-        {<<"foob">>, <<"MZXW6YQ=">>},
-        {<<"fooba">>, <<"MZXW6YTB">>},
-        {<<"foobar">>, <<"MZXW6YTBOI======">>}
-    ].
-
-lower_cases(Cases) ->
-    [{I, <<<<(string:to_lower(C))>> || <<C>> <= O>>} || {I, O} <- Cases].
-
-nopad_cases(Cases) ->
-    [{I, <<<<C>> || <<C>> <= O, C =/= $=>>} || {I, O} <- Cases].
-
-stringinput_cases(Cases) -> [{binary_to_list(I), O} || {I, O} <- Cases].
-
-stringoutput_cases(Cases) -> [{I, binary_to_list(O)} || {I, O} <- Cases].
-
-std_encode_test_() ->
-    [?_assertEqual(Out, encode(In)) || {In, Out} <- std_cases()].
-
-std_decode_test_() ->
-    [?_assertEqual(Out, decode(In)) || {Out, In} <- std_cases()].
-
-std_encode_lower_test_() ->
-    [
-        ?_assertEqual(Out, encode(In, [lower]))
-     || {In, Out} <- lower_cases(std_cases())
-    ].
-
-std_decode_lower_test_() ->
-    [?_assertEqual(Out, decode(In)) || {Out, In} <- lower_cases(std_cases())].
-
-std_encode_nopad_test_() ->
-    [
-        ?_assertEqual(Out, encode(In, [nopad]))
-     || {In, Out} <- nopad_cases(std_cases())
-    ].
-
-std_encode_lower_nopad_test_() ->
-    [
-        ?_assertEqual(Out, encode(In, [lower, nopad]))
-     || {In, Out} <- nopad_cases(lower_cases(std_cases()))
-    ].
-
-std_encode_string_test_() ->
-    [
-        ?_assertEqual(Out, encode(In))
-     || {In, Out} <- stringinput_cases(std_cases())
-    ].
-
-std_decode_string_test_() ->
-    [
-        ?_assertEqual(Out, decode(In))
-     || {Out, In} <- stringoutput_cases(std_cases())
-    ].
-
-hex_cases() ->
-    [
-        {<<>>, <<>>},
-        {<<"f">>, <<"CO======">>},
-        {<<"fo">>, <<"CPNG====">>},
-        {<<"foo">>, <<"CPNMU===">>},
-        {<<"foob">>, <<"CPNMUOG=">>},
-        {<<"fooba">>, <<"CPNMUOJ1">>},
-        {<<"foobar">>, <<"CPNMUOJ1E8======">>}
-    ].
-
-hex_encode_test_() ->
-    [?_assertEqual(Out, encode(In, [hex])) || {In, Out} <- hex_cases()].
-
-hex_decode_test_() ->
-    [?_assertEqual(Out, decode(In, [hex])) || {Out, In} <- hex_cases()].
-
-hex_encode_lower_test_() ->
-    [
-        ?_assertEqual(Out, encode(In, [hex, lower]))
-     || {In, Out} <- lower_cases(hex_cases())
-    ].
-
-hex_decode_lower_test_() ->
-    [
-        ?_assertEqual(Out, decode(In, [hex]))
-     || {Out, In} <- lower_cases(hex_cases())
-    ].
-
-hex_encode_nopad_test_() ->
-    [
-        ?_assertEqual(Out, encode(In, [hex, nopad]))
-     || {In, Out} <- nopad_cases(hex_cases())
-    ].
-
-hex_encode_lower_nopad_test_() ->
-    [
-        ?_assertEqual(Out, encode(In, [hex, lower, nopad]))
-     || {In, Out} <- nopad_cases(lower_cases(hex_cases()))
-    ].
-
-hex_encode_string_test_() ->
-    [
-        ?_assertEqual(Out, encode(In, [hex]))
-     || {In, Out} <- stringinput_cases(hex_cases())
-    ].
-
-hex_decode_string_test_() ->
-    [
-        ?_assertEqual(Out, decode(In, [hex]))
-     || {Out, In} <- stringoutput_cases(hex_cases())
-    ].
-
--endif.
