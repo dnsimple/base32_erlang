@@ -1,3 +1,5 @@
-_build
+_build/
+_checkouts/
+doc/
 .tool-versions
 rebar3
