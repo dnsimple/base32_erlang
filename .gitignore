@@ -1,5 +1,8 @@
+# local setup
+.tool-versions
+
+# rebar 3
+.rebar3
 _build/
 _checkouts/
 doc/
-.tool-versions
-rebar3
