@@ -1,5 +1,6 @@
 -module(base32_test).
 
+-include_lib("proper/include/proper.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
 std_cases() ->
@@ -114,3 +115,39 @@ hex_decode_string_test_() ->
         ?_assertEqual(Out, base32:decode(In, [hex]))
      || {Out, In} <- stringoutput_cases(hex_cases())
     ].
+
+decode_error_test_() ->
+    [
+        ?_assertError(non_alphabetic_character, base32:decode(<<55, 56, 57, 58>>, [hex])),
+        ?_assertError(non_alphabetic_character, base32:decode(<<55, 56, 57, 58>>)),
+        ?_assertError(non_alphabetic_character, base32:decode(<<"AB/C">>, [hex])),
+        ?_assertError(non_alphabetic_character, base32:decode(<<"AB/C">>)),
+        ?_assertError(incorrect_padding, base32:decode(<<"ABC===">>, [hex])),
+        ?_assertError(incorrect_padding, base32:decode(<<"ABC===">>))
+    ].
+
+property_test_() ->
+    [
+        property(fun(B) -> B =:= base32:decode(base32:encode(B, [hex, nopad, lower]), [hex]) end),
+        property(fun(B) -> B =:= base32:decode(base32:encode(B, [hex, nopad]), [hex]) end),
+        property(fun(B) -> B =:= base32:decode(base32:encode(B, [hex]), [hex]) end),
+        property(fun(B) -> B =:= base32:decode(base32:encode(B, [nopad, lower])) end),
+        property(fun(B) -> B =:= base32:decode(base32:encode(B, [nopad])) end),
+        property(fun(B) -> B =:= base32:decode(base32:encode(B)) end)
+    ].
+
+property(Fun) ->
+    Opts = [
+        quiet,
+        long_result,
+        {start_size, 1},
+        {max_size, 1_000},
+        {numtests, 100},
+        {numworkers, erlang:system_info(schedulers_online)}
+    ],
+    ?_assert(
+        proper:quickcheck(
+            proper:conjunction([{encode_decode, ?FORALL(B, binary(), Fun(B))}]),
+            Opts
+        )
+    ).
