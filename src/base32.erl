@@ -51,9 +51,9 @@ Base32 encoding and decoding
 ?DOC(#{equiv => encode(Bin, [])}).
 -spec encode(binary() | string()) -> <<_:_*32>>.
 encode(Bin) when is_binary(Bin) ->
-    encode(Bin, false, false, true);
+    encode(Bin, true, false, false);
 encode(List) when is_list(List) ->
-    encode(iolist_to_binary(List), false, false, true).
+    encode(iolist_to_binary(List), true, false, false).
 
 ?DOC("""
 Encode a string into base 32.
@@ -68,7 +68,7 @@ encode(Bin, Opts) when is_binary(Bin) ->
     Hex = proplists:get_bool(hex, Opts),
     Lower = proplists:get_bool(lower, Opts),
     Pad = not proplists:get_bool(nopad, Opts),
-    encode(Bin, Hex, Lower, Pad);
+    encode(Bin, Pad, Hex, Lower);
 encode(List, Opts) when is_list(List) ->
     encode(iolist_to_binary(List), Opts).
 
@@ -95,13 +95,13 @@ decode(List, Opts) when is_list(List) andalso is_list(Opts) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-encode(Bin, true, true, Pad) ->
+encode(Bin, Pad, true, true) ->
     encode32hexlower(Bin, <<>>, Pad);
-encode(Bin, true, false, Pad) ->
+encode(Bin, Pad, true, false) ->
     encode32hexupper(Bin, <<>>, Pad);
-encode(Bin, false, true, Pad) ->
+encode(Bin, Pad, false, true) ->
     encode32lower(Bin, <<>>, Pad);
-encode(Bin, false, false, Pad) ->
+encode(Bin, Pad, false, false) ->
     encode32upper(Bin, <<>>, Pad).
 
 encode32hexlower(
