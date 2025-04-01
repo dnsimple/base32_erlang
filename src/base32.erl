@@ -80,7 +80,7 @@ decode(List) when is_list(List) ->
     do_decode(iolist_to_binary(List), false).
 
 ?DOC("""
-Encode a binary into base 32.
+Decode a string into base 32.
 
 Options:
 - `hex`: whether decode the input as hexadecimal encoding. Defaults to `false`.
