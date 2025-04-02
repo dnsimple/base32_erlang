@@ -28,114 +28,830 @@
 ?MODULEDOC("""
 Base32 encoding and decoding
 """).
--export([encode/1, encode/2, decode/1, decode/2]).
+
+-compile(
+    {inline, [
+        {encode32upper, 1},
+        {encode32lower, 1},
+        {encode32hexupper, 1},
+        {encode32hexlower, 1},
+        {decode32, 1},
+        {decode32hex, 1},
+        {do_decode, 2},
+        {decode_offset, 1},
+        {error_info, 3}
+    ]}
+).
+
+-export([
+    encode/1, encode/2,
+    decode/1, decode/2
+]).
 
 ?DOC(#{equiv => encode(Bin, [])}).
--spec encode(binary()) -> <<_:_*32>>.
-encode(Bin) when is_binary(Bin) -> encode(Bin, []);
-encode(List) when is_list(List) -> encode(list_to_binary(List), []).
+-spec encode(binary() | string()) -> <<_:_*32>>.
+encode(Bin) when is_binary(Bin) ->
+    encode(Bin, true, false, false);
+encode(List) when is_list(List) ->
+    encode(iolist_to_binary(List), true, false, false).
 
 ?DOC("""
-Encode a binary into base 32.
+Encode a string into base 32.
 
 Options:
 - `hex`: whether to use hexadecimal encoding. Defaults to `false`.
 - `lower`: whether to use lowercase encoding. Defaults to `false`.
 - `nopad`: whether to skip padding. Defaults to `false`.
 """).
--spec encode(binary(), proplists:proplist()) -> <<_:_*32>>.
-encode(Bin, Opts) when is_binary(Bin) andalso is_list(Opts) ->
+-spec encode(binary() | string(), proplists:proplist()) -> <<_:_*32>>.
+encode(Bin, Opts) when is_binary(Bin) ->
     Hex = proplists:get_bool(hex, Opts),
     Lower = proplists:get_bool(lower, Opts),
-    Fun =
-        case Hex of
-            true -> fun(I) -> hex_enc(Lower, I) end;
-            false -> fun(I) -> std_enc(Lower, I) end
-        end,
-    {Encoded0, Rest} = encode_body(Fun, Bin),
-    {Encoded1, PadBy} = encode_rest(Fun, Rest),
-    Padding =
-        case proplists:get_bool(nopad, Opts) of
-            true -> <<>>;
-            false -> list_to_binary(lists:duplicate(PadBy, $=))
-        end,
-    <<Encoded0/binary, Encoded1/binary, Padding/binary>>;
-encode(List, Opts) when is_list(List) andalso is_list(Opts) ->
-    encode(list_to_binary(List), Opts).
-
-encode_body(Fun, Bin) ->
-    Offset = 5 * (byte_size(Bin) div 5),
-    <<Body:Offset/binary, Rest/binary>> = Bin,
-    {<<<<(Fun(I))>> || <<I:5>> <= Body>>, Rest}.
-
-encode_rest(Fun, Bin) ->
-    Whole = bit_size(Bin) div 5,
-    Offset = 5 * Whole,
-    <<Body:Offset/bits, Rest/bits>> = Bin,
-    Body0 = <<<<(Fun(I))>> || <<I:5>> <= Body>>,
-    {Body1, Pad} =
-        case Rest of
-            <<I:3>> -> {<<(Fun(I bsl 2))>>, 6};
-            <<I:1>> -> {<<(Fun(I bsl 4))>>, 4};
-            <<I:4>> -> {<<(Fun(I bsl 1))>>, 3};
-            <<I:2>> -> {<<(Fun(I bsl 3))>>, 1};
-            <<>> -> {<<>>, 0}
-        end,
-    {<<Body0/binary, Body1/binary>>, Pad}.
-
-std_enc(_, I) when is_integer(I) andalso I >= 26 andalso I =< 31 -> I + 24;
-std_enc(Lower, I) when is_integer(I) andalso I >= 0 andalso I =< 25 ->
-    case Lower of
-        true -> I + $a;
-        false -> I + $A
-    end.
-
-hex_enc(_, I) when is_integer(I) andalso I >= 0 andalso I =< 9 -> I + 48;
-hex_enc(Lower, I) when is_integer(I) andalso I >= 10 andalso I =< 31 ->
-    case Lower of
-        true -> I + 87;
-        false -> I + 55
-    end.
+    Pad = not proplists:get_bool(nopad, Opts),
+    encode(Bin, Pad, Hex, Lower);
+encode(List, Opts) when is_list(List) ->
+    encode(iolist_to_binary(List), Opts).
 
 ?DOC(#{equiv => decode(Bin, [])}).
 -spec decode(<<_:_*32>>) -> binary().
-decode(Bin) when is_binary(Bin) -> decode(Bin, []);
-decode(List) when is_list(List) -> decode(list_to_binary(List), []).
+decode(Bin) when is_binary(Bin) ->
+    do_decode(Bin, false);
+decode(List) when is_list(List) ->
+    do_decode(iolist_to_binary(List), false).
 
 ?DOC("""
-Encode a binary into base 32.
+Decode a string into base 32.
 
 Options:
 - `hex`: whether decode the input as hexadecimal encoding. Defaults to `false`.
 """).
--spec decode(<<_:_*32>>, proplists:proplist()) -> binary().
+-spec decode(<<_:_*32>> | string(), proplists:proplist()) -> binary().
 decode(Bin, Opts) when is_binary(Bin) andalso is_list(Opts) ->
-    Fun =
-        case proplists:get_bool(hex, Opts) of
-            true -> fun hex_dec/1;
-            false -> fun std_dec/1
-        end,
-    decode(Fun, Bin, <<>>);
+    Hex = proplists:get_bool(hex, Opts),
+    do_decode(Bin, Hex);
 decode(List, Opts) when is_list(List) andalso is_list(Opts) ->
-    decode(list_to_binary(List), Opts).
+    Hex = proplists:get_bool(hex, Opts),
+    do_decode(iolist_to_binary(List), Hex).
 
-decode(Fun, <<X, "======">>, Bits) ->
-    <<Bits/bits, (Fun(X) bsr 2):3>>;
-decode(Fun, <<X, "====">>, Bits) ->
-    <<Bits/bits, (Fun(X) bsr 4):1>>;
-decode(Fun, <<X, "===">>, Bits) ->
-    <<Bits/bits, (Fun(X) bsr 1):4>>;
-decode(Fun, <<X, "=">>, Bits) ->
-    <<Bits/bits, (Fun(X) bsr 3):2>>;
-decode(Fun, <<X, Rest/binary>>, Bits) ->
-    decode(Fun, Rest, <<Bits/bits, (Fun(X)):5>>);
-decode(_Fun, <<>>, Bin) ->
-    Bin.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-std_dec(I) when I >= $2 andalso I =< $7 -> I - 24;
-std_dec(I) when I >= $a andalso I =< $z -> I - $a;
-std_dec(I) when I >= $A andalso I =< $Z -> I - $A.
+encode(Bin, Pad, true, true) ->
+    encode32hexlower(Bin, <<>>, Pad);
+encode(Bin, Pad, true, false) ->
+    encode32hexupper(Bin, <<>>, Pad);
+encode(Bin, Pad, false, true) ->
+    encode32lower(Bin, <<>>, Pad);
+encode(Bin, Pad, false, false) ->
+    encode32upper(Bin, <<>>, Pad).
 
-hex_dec(I) when I >= $0 andalso I =< $9 -> I - 48;
-hex_dec(I) when I >= $a andalso I =< $z -> I - 87;
-hex_dec(I) when I >= $A andalso I =< $Z -> I - 55.
+encode32hexlower(
+    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:10/integer, Rest/binary>>,
+    Acc,
+    Pad
+) ->
+    encode32hexlower(
+        Rest,
+        <<Acc/binary, (encode32hexlower(C1)):16/integer, (encode32hexlower(C2)):16/integer,
+            (encode32hexlower(C3)):16/integer, (encode32hexlower(C4)):16/integer>>,
+        Pad
+    );
+encode32hexlower(
+    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:2/integer>>,
+    Acc,
+    Pad
+) ->
+    maybe_pad(
+        <<Acc/binary, (encode32hexlower(C1)):16/integer, (encode32hexlower(C2)):16/integer,
+            (encode32hexlower(C3)):16/integer, (encode32hexlower(C4 bsl 3) band 255):8/integer>>,
+        Pad,
+        1
+    );
+encode32hexlower(
+    <<C1:10/integer, C2:10/integer, C3:4/integer>>,
+    Acc,
+    Pad
+) ->
+    maybe_pad(
+        <<Acc/binary, (encode32hexlower(C1)):16/integer, (encode32hexlower(C2)):16/integer,
+            (encode32hexlower(C3 bsl 1) band 255):8/integer>>,
+        Pad,
+        3
+    );
+encode32hexlower(
+    <<C1:10/integer, C2:6/integer>>,
+    Acc,
+    Pad
+) ->
+    maybe_pad(
+        <<Acc/binary, (encode32hexlower(C1)):16/integer, (encode32hexlower(C2 bsl 4)):16/integer>>,
+        Pad,
+        4
+    );
+encode32hexlower(
+    <<C1:8/integer>>,
+    Acc,
+    Pad
+) ->
+    maybe_pad(
+        <<Acc/binary, (encode32hexlower(C1 bsl 2)):16/integer>>,
+        Pad,
+        6
+    );
+encode32hexlower(<<>>, Acc, _) ->
+    Acc.
+
+encode32hexupper(
+    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:10/integer, Rest/binary>>,
+    Acc,
+    Pad
+) ->
+    encode32hexupper(
+        Rest,
+        <<Acc/binary, (encode32hexupper(C1)):16/integer, (encode32hexupper(C2)):16/integer,
+            (encode32hexupper(C3)):16/integer, (encode32hexupper(C4)):16/integer>>,
+        Pad
+    );
+encode32hexupper(
+    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:2/integer>>,
+    Acc,
+    Pad
+) ->
+    maybe_pad(
+        <<Acc/binary, (encode32hexupper(C1)):16/integer, (encode32hexupper(C2)):16/integer,
+            (encode32hexupper(C3)):16/integer, (encode32hexupper(C4 bsl 3) band 255):8/integer>>,
+        Pad,
+        1
+    );
+encode32hexupper(
+    <<C1:10/integer, C2:10/integer, C3:4/integer>>,
+    Acc,
+    Pad
+) ->
+    maybe_pad(
+        <<Acc/binary, (encode32hexupper(C1)):16/integer, (encode32hexupper(C2)):16/integer,
+            (encode32hexupper(C3 bsl 1) band 255):8/integer>>,
+        Pad,
+        3
+    );
+encode32hexupper(
+    <<C1:10/integer, C2:6/integer>>,
+    Acc,
+    Pad
+) ->
+    maybe_pad(
+        <<Acc/binary, (encode32hexupper(C1)):16/integer, (encode32hexupper(C2 bsl 4)):16/integer>>,
+        Pad,
+        4
+    );
+encode32hexupper(
+    <<C1:8/integer>>,
+    Acc,
+    Pad
+) ->
+    maybe_pad(
+        <<Acc/binary, (encode32hexupper(C1 bsl 2)):16/integer>>,
+        Pad,
+        6
+    );
+encode32hexupper(<<>>, Acc, _) ->
+    Acc.
+
+encode32lower(
+    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:10/integer, Rest/binary>>,
+    Acc,
+    Pad
+) ->
+    encode32lower(
+        Rest,
+        <<Acc/binary, (encode32lower(C1)):16/integer, (encode32lower(C2)):16/integer,
+            (encode32lower(C3)):16/integer, (encode32lower(C4)):16/integer>>,
+        Pad
+    );
+encode32lower(
+    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:2/integer>>,
+    Acc,
+    Pad
+) ->
+    maybe_pad(
+        <<Acc/binary, (encode32lower(C1)):16/integer, (encode32lower(C2)):16/integer,
+            (encode32lower(C3)):16/integer, (encode32lower(C4 bsl 3) band 255):8/integer>>,
+        Pad,
+        1
+    );
+encode32lower(
+    <<C1:10/integer, C2:10/integer, C3:4/integer>>,
+    Acc,
+    Pad
+) ->
+    maybe_pad(
+        <<Acc/binary, (encode32lower(C1)):16/integer, (encode32lower(C2)):16/integer,
+            (encode32lower(C3 bsl 1) band 255):8/integer>>,
+        Pad,
+        3
+    );
+encode32lower(
+    <<C1:10/integer, C2:6/integer>>,
+    Acc,
+    Pad
+) ->
+    maybe_pad(
+        <<Acc/binary, (encode32lower(C1)):16/integer, (encode32lower(C2 bsl 4)):16/integer>>,
+        Pad,
+        4
+    );
+encode32lower(<<C1:8/integer>>, Acc, Pad) ->
+    maybe_pad(
+        <<Acc/binary, (encode32lower(C1 bsl 2)):16/integer>>,
+        Pad,
+        6
+    );
+encode32lower(<<>>, Acc, _) ->
+    Acc.
+
+encode32upper(
+    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:10/integer, Rest/binary>>,
+    Acc,
+    Pad
+) ->
+    encode32upper(
+        Rest,
+        <<Acc/binary, (encode32upper(C1)):16/integer, (encode32upper(C2)):16/integer,
+            (encode32upper(C3)):16/integer, (encode32upper(C4)):16/integer>>,
+        Pad
+    );
+encode32upper(
+    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:2/integer>>,
+    Acc,
+    Pad
+) ->
+    maybe_pad(
+        <<Acc/binary, (encode32upper(C1)):16/integer, (encode32upper(C2)):16/integer,
+            (encode32upper(C3)):16/integer, (encode32upper(C4 bsl 3) band 255):8/integer>>,
+        Pad,
+        1
+    );
+encode32upper(
+    <<C1:10/integer, C2:10/integer, C3:4/integer>>,
+    Acc,
+    Pad
+) ->
+    maybe_pad(
+        <<Acc/binary, (encode32upper(C1)):16/integer, (encode32upper(C2)):16/integer,
+            (encode32upper(C3 bsl 1) band 255):8/integer>>,
+        Pad,
+        3
+    );
+encode32upper(
+    <<C1:10/integer, C2:6/integer>>,
+    Acc,
+    Pad
+) ->
+    maybe_pad(
+        <<Acc/binary, (encode32upper(C1)):16/integer, (encode32upper(C2 bsl 4)):16/integer>>,
+        Pad,
+        4
+    );
+encode32upper(<<C1:8/integer>>, Acc, Pad) ->
+    maybe_pad(
+        <<Acc/binary, (encode32upper(C1 bsl 2)):16/integer>>,
+        Pad,
+        6
+    );
+encode32upper(<<>>, Acc, _) ->
+    Acc.
+
+do_decode(Bin, false) ->
+    do_decode32(Bin);
+do_decode(Bin, true) ->
+    do_decode32hex(Bin).
+
+do_decode32hex(<<>>) ->
+    <<>>;
+do_decode32hex(Bin) ->
+    Offset = decode_offset(Bin),
+    <<Main:Offset/binary-unit:64, Rest/binary>> = Bin,
+    Main1 = <<
+        <<
+            (decode32hex(C1)):5/integer,
+            (decode32hex(C2)):5/integer,
+            (decode32hex(C3)):5/integer,
+            (decode32hex(C4)):5/integer,
+            (decode32hex(C5)):5/integer,
+            (decode32hex(C6)):5/integer,
+            (decode32hex(C7)):5/integer,
+            (decode32hex(C8)):5/integer
+        >>
+     || <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
+            C7:8/integer, C8:8/integer>> <= Main
+    >>,
+    case Rest of
+        <<C1:8/integer, C2:8/integer, 61/integer, 61/integer, 61/integer, 61/integer, 61/integer,
+            61/integer>> ->
+            <<Main1/bitstring, (decode32hex(C1)):5/integer, (decode32hex(C2) bsr 2):3/integer>>;
+        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, 61/integer, 61/integer,
+            61/integer, 61/integer>> ->
+            <<Main1/bitstring, (decode32hex(C1)):5/integer, (decode32hex(C2)):5/integer,
+                (decode32hex(C3)):5/integer, (decode32hex(C4) bsr 4):1/integer>>;
+        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, 61/integer,
+            61/integer, 61/integer>> ->
+            <<Main1/bitstring, (decode32hex(C1)):5/integer, (decode32hex(C2)):5/integer,
+                (decode32hex(C3)):5/integer, (decode32hex(C4)):5/integer,
+                (decode32hex(C5) bsr 1):4/integer>>;
+        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
+            C7:8/integer, 61/integer>> ->
+            <<Main1/bitstring, (decode32hex(C1)):5/integer, (decode32hex(C2)):5/integer,
+                (decode32hex(C3)):5/integer, (decode32hex(C4)):5/integer,
+                (decode32hex(C5)):5/integer, (decode32hex(C6)):5/integer,
+                (decode32hex(C7) bsr 3):2/integer>>;
+        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
+            C7:8/integer, C8:8/integer>> ->
+            <<Main1/bitstring, (decode32hex(C1)):5/integer, (decode32hex(C2)):5/integer,
+                (decode32hex(C3)):5/integer, (decode32hex(C4)):5/integer,
+                (decode32hex(C5)):5/integer, (decode32hex(C6)):5/integer,
+                (decode32hex(C7)):5/integer, (decode32hex(C8)):5/integer>>;
+        <<C1:8/integer, C2:8/integer>> ->
+            <<Main1/bitstring, (decode32hex(C1)):5/integer, (decode32hex(C2) bsr 2):3/integer>>;
+        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer>> ->
+            <<Main1/bitstring, (decode32hex(C1)):5/integer, (decode32hex(C2)):5/integer,
+                (decode32hex(C3)):5/integer, (decode32hex(C4) bsr 4):1/integer>>;
+        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer>> ->
+            <<Main1/bitstring, (decode32hex(C1)):5/integer, (decode32hex(C2)):5/integer,
+                (decode32hex(C3)):5/integer, (decode32hex(C4)):5/integer,
+                (decode32hex(C5) bsr 1):4/integer>>;
+        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
+            C7:8/integer>> ->
+            <<Main1/bitstring, (decode32hex(C1)):5/integer, (decode32hex(C2)):5/integer,
+                (decode32hex(C3)):5/integer, (decode32hex(C4)):5/integer,
+                (decode32hex(C5)):5/integer, (decode32hex(C6)):5/integer,
+                (decode32hex(C7) bsr 3):2/integer>>;
+        _ ->
+            error_info(Bin, incorrect_padding, ?FUNCTION_NAME)
+    end.
+
+do_decode32(<<>>) ->
+    <<>>;
+do_decode32(Bin) ->
+    Offset = decode_offset(Bin),
+    <<Main:Offset/binary-unit:64, Rest/binary>> = Bin,
+    Main1 = <<
+        <<
+            (decode32(C1)):5/integer,
+            (decode32(C2)):5/integer,
+            (decode32(C3)):5/integer,
+            (decode32(C4)):5/integer,
+            (decode32(C5)):5/integer,
+            (decode32(C6)):5/integer,
+            (decode32(C7)):5/integer,
+            (decode32(C8)):5/integer
+        >>
+     || <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
+            C7:8/integer, C8:8/integer>> <= Main
+    >>,
+    case Rest of
+        <<C1:8/integer, C2:8/integer, 61/integer, 61/integer, 61/integer, 61/integer, 61/integer,
+            61/integer>> ->
+            <<Main1/bitstring, (decode32(C1)):5/integer, (decode32(C2) bsr 2):3/integer>>;
+        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, 61/integer, 61/integer,
+            61/integer, 61/integer>> ->
+            <<Main1/bitstring, (decode32(C1)):5/integer, (decode32(C2)):5/integer,
+                (decode32(C3)):5/integer, (decode32(C4) bsr 4):1/integer>>;
+        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, 61/integer,
+            61/integer, 61/integer>> ->
+            <<Main1/bitstring, (decode32(C1)):5/integer, (decode32(C2)):5/integer,
+                (decode32(C3)):5/integer, (decode32(C4)):5/integer,
+                (decode32(C5) bsr 1):4/integer>>;
+        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
+            C7:8/integer, 61/integer>> ->
+            <<Main1/bitstring, (decode32(C1)):5/integer, (decode32(C2)):5/integer,
+                (decode32(C3)):5/integer, (decode32(C4)):5/integer, (decode32(C5)):5/integer,
+                (decode32(C6)):5/integer, (decode32(C7) bsr 3):2/integer>>;
+        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
+            C7:8/integer, C8:8/integer>> ->
+            <<Main1/bitstring, (decode32(C1)):5/integer, (decode32(C2)):5/integer,
+                (decode32(C3)):5/integer, (decode32(C4)):5/integer, (decode32(C5)):5/integer,
+                (decode32(C6)):5/integer, (decode32(C7)):5/integer, (decode32(C8)):5/integer>>;
+        <<C1:8/integer, C2:8/integer>> ->
+            <<Main1/bitstring, (decode32(C1)):5/integer, (decode32(C2) bsr 2):3/integer>>;
+        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer>> ->
+            <<Main1/bitstring, (decode32(C1)):5/integer, (decode32(C2)):5/integer,
+                (decode32(C3)):5/integer, (decode32(C4) bsr 4):1/integer>>;
+        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer>> ->
+            <<Main1/bitstring, (decode32(C1)):5/integer, (decode32(C2)):5/integer,
+                (decode32(C3)):5/integer, (decode32(C4)):5/integer,
+                (decode32(C5) bsr 1):4/integer>>;
+        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
+            C7:8/integer>> ->
+            <<Main1/bitstring, (decode32(C1)):5/integer, (decode32(C2)):5/integer,
+                (decode32(C3)):5/integer, (decode32(C4)):5/integer, (decode32(C5)):5/integer,
+                (decode32(C6)):5/integer, (decode32(C7) bsr 3):2/integer>>;
+        _ ->
+            error_info(Bin, incorrect_padding, ?FUNCTION_NAME)
+    end.
+
+maybe_pad(Acc, false, _) -> Acc;
+maybe_pad(Acc, true, 6) -> <<Acc/binary, "======">>;
+maybe_pad(Acc, true, 4) -> <<Acc/binary, "====">>;
+maybe_pad(Acc, true, 3) -> <<Acc/binary, "===">>;
+maybe_pad(Acc, true, 1) -> <<Acc/binary, "=">>.
+
+decode_offset(Bin) ->
+    (byte_size(Bin) + 7) div 8 - 1.
+
+error_info(Arg, Reason, FunctionName) ->
+    erlang:error(Reason, Arg, [{error_info, #{module => ?MODULE, function => FunctionName}}]).
+
+decode32(Byte) ->
+    try
+        element(
+            Byte - 50 + 1,
+            {26, 27, 28, 29, 30, 31, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 1, 2, 3, 4, 5,
+                6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, nil,
+                nil, nil, nil, nil, nil, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+                17, 18, 19, 20, 21, 22, 23, 24, 25}
+        )
+    of
+        nil -> error_info(Byte, non_alphabetic_character, ?FUNCTION_NAME);
+        Char -> Char
+    catch
+        error:_ -> error_info(Byte, non_alphabetic_character, ?FUNCTION_NAME)
+    end.
+
+decode32hex(Byte) ->
+    try
+        element(
+            Byte - 48 + 1,
+            {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, nil, nil, nil, nil, nil, nil, nil, 10, 11, 12, 13, 14,
+                15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, nil, nil, nil,
+                nil, nil, nil, nil, nil, nil, nil, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+                22, 23, 24, 25, 26, 27, 28, 29, 30, 31}
+        )
+    of
+        nil -> error_info(Byte, non_alphabetic_character, ?FUNCTION_NAME);
+        Char -> Char
+    catch
+        error:_ -> error_info(Byte, non_alphabetic_character, ?FUNCTION_NAME)
+    end.
+
+encode32hexlower(Byte) ->
+    element(
+        Byte + 1,
+        {12336, 12337, 12338, 12339, 12340, 12341, 12342, 12343, 12344, 12345, 12385, 12386, 12387,
+            12388, 12389, 12390, 12391, 12392, 12393, 12394, 12395, 12396, 12397, 12398, 12399,
+            12400, 12401, 12402, 12403, 12404, 12405, 12406, 12592, 12593, 12594, 12595, 12596,
+            12597, 12598, 12599, 12600, 12601, 12641, 12642, 12643, 12644, 12645, 12646, 12647,
+            12648, 12649, 12650, 12651, 12652, 12653, 12654, 12655, 12656, 12657, 12658, 12659,
+            12660, 12661, 12662, 12848, 12849, 12850, 12851, 12852, 12853, 12854, 12855, 12856,
+            12857, 12897, 12898, 12899, 12900, 12901, 12902, 12903, 12904, 12905, 12906, 12907,
+            12908, 12909, 12910, 12911, 12912, 12913, 12914, 12915, 12916, 12917, 12918, 13104,
+            13105, 13106, 13107, 13108, 13109, 13110, 13111, 13112, 13113, 13153, 13154, 13155,
+            13156, 13157, 13158, 13159, 13160, 13161, 13162, 13163, 13164, 13165, 13166, 13167,
+            13168, 13169, 13170, 13171, 13172, 13173, 13174, 13360, 13361, 13362, 13363, 13364,
+            13365, 13366, 13367, 13368, 13369, 13409, 13410, 13411, 13412, 13413, 13414, 13415,
+            13416, 13417, 13418, 13419, 13420, 13421, 13422, 13423, 13424, 13425, 13426, 13427,
+            13428, 13429, 13430, 13616, 13617, 13618, 13619, 13620, 13621, 13622, 13623, 13624,
+            13625, 13665, 13666, 13667, 13668, 13669, 13670, 13671, 13672, 13673, 13674, 13675,
+            13676, 13677, 13678, 13679, 13680, 13681, 13682, 13683, 13684, 13685, 13686, 13872,
+            13873, 13874, 13875, 13876, 13877, 13878, 13879, 13880, 13881, 13921, 13922, 13923,
+            13924, 13925, 13926, 13927, 13928, 13929, 13930, 13931, 13932, 13933, 13934, 13935,
+            13936, 13937, 13938, 13939, 13940, 13941, 13942, 14128, 14129, 14130, 14131, 14132,
+            14133, 14134, 14135, 14136, 14137, 14177, 14178, 14179, 14180, 14181, 14182, 14183,
+            14184, 14185, 14186, 14187, 14188, 14189, 14190, 14191, 14192, 14193, 14194, 14195,
+            14196, 14197, 14198, 14384, 14385, 14386, 14387, 14388, 14389, 14390, 14391, 14392,
+            14393, 14433, 14434, 14435, 14436, 14437, 14438, 14439, 14440, 14441, 14442, 14443,
+            14444, 14445, 14446, 14447, 14448, 14449, 14450, 14451, 14452, 14453, 14454, 14640,
+            14641, 14642, 14643, 14644, 14645, 14646, 14647, 14648, 14649, 14689, 14690, 14691,
+            14692, 14693, 14694, 14695, 14696, 14697, 14698, 14699, 14700, 14701, 14702, 14703,
+            14704, 14705, 14706, 14707, 14708, 14709, 14710, 24880, 24881, 24882, 24883, 24884,
+            24885, 24886, 24887, 24888, 24889, 24929, 24930, 24931, 24932, 24933, 24934, 24935,
+            24936, 24937, 24938, 24939, 24940, 24941, 24942, 24943, 24944, 24945, 24946, 24947,
+            24948, 24949, 24950, 25136, 25137, 25138, 25139, 25140, 25141, 25142, 25143, 25144,
+            25145, 25185, 25186, 25187, 25188, 25189, 25190, 25191, 25192, 25193, 25194, 25195,
+            25196, 25197, 25198, 25199, 25200, 25201, 25202, 25203, 25204, 25205, 25206, 25392,
+            25393, 25394, 25395, 25396, 25397, 25398, 25399, 25400, 25401, 25441, 25442, 25443,
+            25444, 25445, 25446, 25447, 25448, 25449, 25450, 25451, 25452, 25453, 25454, 25455,
+            25456, 25457, 25458, 25459, 25460, 25461, 25462, 25648, 25649, 25650, 25651, 25652,
+            25653, 25654, 25655, 25656, 25657, 25697, 25698, 25699, 25700, 25701, 25702, 25703,
+            25704, 25705, 25706, 25707, 25708, 25709, 25710, 25711, 25712, 25713, 25714, 25715,
+            25716, 25717, 25718, 25904, 25905, 25906, 25907, 25908, 25909, 25910, 25911, 25912,
+            25913, 25953, 25954, 25955, 25956, 25957, 25958, 25959, 25960, 25961, 25962, 25963,
+            25964, 25965, 25966, 25967, 25968, 25969, 25970, 25971, 25972, 25973, 25974, 26160,
+            26161, 26162, 26163, 26164, 26165, 26166, 26167, 26168, 26169, 26209, 26210, 26211,
+            26212, 26213, 26214, 26215, 26216, 26217, 26218, 26219, 26220, 26221, 26222, 26223,
+            26224, 26225, 26226, 26227, 26228, 26229, 26230, 26416, 26417, 26418, 26419, 26420,
+            26421, 26422, 26423, 26424, 26425, 26465, 26466, 26467, 26468, 26469, 26470, 26471,
+            26472, 26473, 26474, 26475, 26476, 26477, 26478, 26479, 26480, 26481, 26482, 26483,
+            26484, 26485, 26486, 26672, 26673, 26674, 26675, 26676, 26677, 26678, 26679, 26680,
+            26681, 26721, 26722, 26723, 26724, 26725, 26726, 26727, 26728, 26729, 26730, 26731,
+            26732, 26733, 26734, 26735, 26736, 26737, 26738, 26739, 26740, 26741, 26742, 26928,
+            26929, 26930, 26931, 26932, 26933, 26934, 26935, 26936, 26937, 26977, 26978, 26979,
+            26980, 26981, 26982, 26983, 26984, 26985, 26986, 26987, 26988, 26989, 26990, 26991,
+            26992, 26993, 26994, 26995, 26996, 26997, 26998, 27184, 27185, 27186, 27187, 27188,
+            27189, 27190, 27191, 27192, 27193, 27233, 27234, 27235, 27236, 27237, 27238, 27239,
+            27240, 27241, 27242, 27243, 27244, 27245, 27246, 27247, 27248, 27249, 27250, 27251,
+            27252, 27253, 27254, 27440, 27441, 27442, 27443, 27444, 27445, 27446, 27447, 27448,
+            27449, 27489, 27490, 27491, 27492, 27493, 27494, 27495, 27496, 27497, 27498, 27499,
+            27500, 27501, 27502, 27503, 27504, 27505, 27506, 27507, 27508, 27509, 27510, 27696,
+            27697, 27698, 27699, 27700, 27701, 27702, 27703, 27704, 27705, 27745, 27746, 27747,
+            27748, 27749, 27750, 27751, 27752, 27753, 27754, 27755, 27756, 27757, 27758, 27759,
+            27760, 27761, 27762, 27763, 27764, 27765, 27766, 27952, 27953, 27954, 27955, 27956,
+            27957, 27958, 27959, 27960, 27961, 28001, 28002, 28003, 28004, 28005, 28006, 28007,
+            28008, 28009, 28010, 28011, 28012, 28013, 28014, 28015, 28016, 28017, 28018, 28019,
+            28020, 28021, 28022, 28208, 28209, 28210, 28211, 28212, 28213, 28214, 28215, 28216,
+            28217, 28257, 28258, 28259, 28260, 28261, 28262, 28263, 28264, 28265, 28266, 28267,
+            28268, 28269, 28270, 28271, 28272, 28273, 28274, 28275, 28276, 28277, 28278, 28464,
+            28465, 28466, 28467, 28468, 28469, 28470, 28471, 28472, 28473, 28513, 28514, 28515,
+            28516, 28517, 28518, 28519, 28520, 28521, 28522, 28523, 28524, 28525, 28526, 28527,
+            28528, 28529, 28530, 28531, 28532, 28533, 28534, 28720, 28721, 28722, 28723, 28724,
+            28725, 28726, 28727, 28728, 28729, 28769, 28770, 28771, 28772, 28773, 28774, 28775,
+            28776, 28777, 28778, 28779, 28780, 28781, 28782, 28783, 28784, 28785, 28786, 28787,
+            28788, 28789, 28790, 28976, 28977, 28978, 28979, 28980, 28981, 28982, 28983, 28984,
+            28985, 29025, 29026, 29027, 29028, 29029, 29030, 29031, 29032, 29033, 29034, 29035,
+            29036, 29037, 29038, 29039, 29040, 29041, 29042, 29043, 29044, 29045, 29046, 29232,
+            29233, 29234, 29235, 29236, 29237, 29238, 29239, 29240, 29241, 29281, 29282, 29283,
+            29284, 29285, 29286, 29287, 29288, 29289, 29290, 29291, 29292, 29293, 29294, 29295,
+            29296, 29297, 29298, 29299, 29300, 29301, 29302, 29488, 29489, 29490, 29491, 29492,
+            29493, 29494, 29495, 29496, 29497, 29537, 29538, 29539, 29540, 29541, 29542, 29543,
+            29544, 29545, 29546, 29547, 29548, 29549, 29550, 29551, 29552, 29553, 29554, 29555,
+            29556, 29557, 29558, 29744, 29745, 29746, 29747, 29748, 29749, 29750, 29751, 29752,
+            29753, 29793, 29794, 29795, 29796, 29797, 29798, 29799, 29800, 29801, 29802, 29803,
+            29804, 29805, 29806, 29807, 29808, 29809, 29810, 29811, 29812, 29813, 29814, 30000,
+            30001, 30002, 30003, 30004, 30005, 30006, 30007, 30008, 30009, 30049, 30050, 30051,
+            30052, 30053, 30054, 30055, 30056, 30057, 30058, 30059, 30060, 30061, 30062, 30063,
+            30064, 30065, 30066, 30067, 30068, 30069, 30070, 30256, 30257, 30258, 30259, 30260,
+            30261, 30262, 30263, 30264, 30265, 30305, 30306, 30307, 30308, 30309, 30310, 30311,
+            30312, 30313, 30314, 30315, 30316, 30317, 30318, 30319, 30320, 30321, 30322, 30323,
+            30324, 30325, 30326}
+    ).
+
+encode32hexupper(Byte) ->
+    element(
+        Byte + 1,
+        {12336, 12337, 12338, 12339, 12340, 12341, 12342, 12343, 12344, 12345, 12353, 12354, 12355,
+            12356, 12357, 12358, 12359, 12360, 12361, 12362, 12363, 12364, 12365, 12366, 12367,
+            12368, 12369, 12370, 12371, 12372, 12373, 12374, 12592, 12593, 12594, 12595, 12596,
+            12597, 12598, 12599, 12600, 12601, 12609, 12610, 12611, 12612, 12613, 12614, 12615,
+            12616, 12617, 12618, 12619, 12620, 12621, 12622, 12623, 12624, 12625, 12626, 12627,
+            12628, 12629, 12630, 12848, 12849, 12850, 12851, 12852, 12853, 12854, 12855, 12856,
+            12857, 12865, 12866, 12867, 12868, 12869, 12870, 12871, 12872, 12873, 12874, 12875,
+            12876, 12877, 12878, 12879, 12880, 12881, 12882, 12883, 12884, 12885, 12886, 13104,
+            13105, 13106, 13107, 13108, 13109, 13110, 13111, 13112, 13113, 13121, 13122, 13123,
+            13124, 13125, 13126, 13127, 13128, 13129, 13130, 13131, 13132, 13133, 13134, 13135,
+            13136, 13137, 13138, 13139, 13140, 13141, 13142, 13360, 13361, 13362, 13363, 13364,
+            13365, 13366, 13367, 13368, 13369, 13377, 13378, 13379, 13380, 13381, 13382, 13383,
+            13384, 13385, 13386, 13387, 13388, 13389, 13390, 13391, 13392, 13393, 13394, 13395,
+            13396, 13397, 13398, 13616, 13617, 13618, 13619, 13620, 13621, 13622, 13623, 13624,
+            13625, 13633, 13634, 13635, 13636, 13637, 13638, 13639, 13640, 13641, 13642, 13643,
+            13644, 13645, 13646, 13647, 13648, 13649, 13650, 13651, 13652, 13653, 13654, 13872,
+            13873, 13874, 13875, 13876, 13877, 13878, 13879, 13880, 13881, 13889, 13890, 13891,
+            13892, 13893, 13894, 13895, 13896, 13897, 13898, 13899, 13900, 13901, 13902, 13903,
+            13904, 13905, 13906, 13907, 13908, 13909, 13910, 14128, 14129, 14130, 14131, 14132,
+            14133, 14134, 14135, 14136, 14137, 14145, 14146, 14147, 14148, 14149, 14150, 14151,
+            14152, 14153, 14154, 14155, 14156, 14157, 14158, 14159, 14160, 14161, 14162, 14163,
+            14164, 14165, 14166, 14384, 14385, 14386, 14387, 14388, 14389, 14390, 14391, 14392,
+            14393, 14401, 14402, 14403, 14404, 14405, 14406, 14407, 14408, 14409, 14410, 14411,
+            14412, 14413, 14414, 14415, 14416, 14417, 14418, 14419, 14420, 14421, 14422, 14640,
+            14641, 14642, 14643, 14644, 14645, 14646, 14647, 14648, 14649, 14657, 14658, 14659,
+            14660, 14661, 14662, 14663, 14664, 14665, 14666, 14667, 14668, 14669, 14670, 14671,
+            14672, 14673, 14674, 14675, 14676, 14677, 14678, 16688, 16689, 16690, 16691, 16692,
+            16693, 16694, 16695, 16696, 16697, 16705, 16706, 16707, 16708, 16709, 16710, 16711,
+            16712, 16713, 16714, 16715, 16716, 16717, 16718, 16719, 16720, 16721, 16722, 16723,
+            16724, 16725, 16726, 16944, 16945, 16946, 16947, 16948, 16949, 16950, 16951, 16952,
+            16953, 16961, 16962, 16963, 16964, 16965, 16966, 16967, 16968, 16969, 16970, 16971,
+            16972, 16973, 16974, 16975, 16976, 16977, 16978, 16979, 16980, 16981, 16982, 17200,
+            17201, 17202, 17203, 17204, 17205, 17206, 17207, 17208, 17209, 17217, 17218, 17219,
+            17220, 17221, 17222, 17223, 17224, 17225, 17226, 17227, 17228, 17229, 17230, 17231,
+            17232, 17233, 17234, 17235, 17236, 17237, 17238, 17456, 17457, 17458, 17459, 17460,
+            17461, 17462, 17463, 17464, 17465, 17473, 17474, 17475, 17476, 17477, 17478, 17479,
+            17480, 17481, 17482, 17483, 17484, 17485, 17486, 17487, 17488, 17489, 17490, 17491,
+            17492, 17493, 17494, 17712, 17713, 17714, 17715, 17716, 17717, 17718, 17719, 17720,
+            17721, 17729, 17730, 17731, 17732, 17733, 17734, 17735, 17736, 17737, 17738, 17739,
+            17740, 17741, 17742, 17743, 17744, 17745, 17746, 17747, 17748, 17749, 17750, 17968,
+            17969, 17970, 17971, 17972, 17973, 17974, 17975, 17976, 17977, 17985, 17986, 17987,
+            17988, 17989, 17990, 17991, 17992, 17993, 17994, 17995, 17996, 17997, 17998, 17999,
+            18000, 18001, 18002, 18003, 18004, 18005, 18006, 18224, 18225, 18226, 18227, 18228,
+            18229, 18230, 18231, 18232, 18233, 18241, 18242, 18243, 18244, 18245, 18246, 18247,
+            18248, 18249, 18250, 18251, 18252, 18253, 18254, 18255, 18256, 18257, 18258, 18259,
+            18260, 18261, 18262, 18480, 18481, 18482, 18483, 18484, 18485, 18486, 18487, 18488,
+            18489, 18497, 18498, 18499, 18500, 18501, 18502, 18503, 18504, 18505, 18506, 18507,
+            18508, 18509, 18510, 18511, 18512, 18513, 18514, 18515, 18516, 18517, 18518, 18736,
+            18737, 18738, 18739, 18740, 18741, 18742, 18743, 18744, 18745, 18753, 18754, 18755,
+            18756, 18757, 18758, 18759, 18760, 18761, 18762, 18763, 18764, 18765, 18766, 18767,
+            18768, 18769, 18770, 18771, 18772, 18773, 18774, 18992, 18993, 18994, 18995, 18996,
+            18997, 18998, 18999, 19000, 19001, 19009, 19010, 19011, 19012, 19013, 19014, 19015,
+            19016, 19017, 19018, 19019, 19020, 19021, 19022, 19023, 19024, 19025, 19026, 19027,
+            19028, 19029, 19030, 19248, 19249, 19250, 19251, 19252, 19253, 19254, 19255, 19256,
+            19257, 19265, 19266, 19267, 19268, 19269, 19270, 19271, 19272, 19273, 19274, 19275,
+            19276, 19277, 19278, 19279, 19280, 19281, 19282, 19283, 19284, 19285, 19286, 19504,
+            19505, 19506, 19507, 19508, 19509, 19510, 19511, 19512, 19513, 19521, 19522, 19523,
+            19524, 19525, 19526, 19527, 19528, 19529, 19530, 19531, 19532, 19533, 19534, 19535,
+            19536, 19537, 19538, 19539, 19540, 19541, 19542, 19760, 19761, 19762, 19763, 19764,
+            19765, 19766, 19767, 19768, 19769, 19777, 19778, 19779, 19780, 19781, 19782, 19783,
+            19784, 19785, 19786, 19787, 19788, 19789, 19790, 19791, 19792, 19793, 19794, 19795,
+            19796, 19797, 19798, 20016, 20017, 20018, 20019, 20020, 20021, 20022, 20023, 20024,
+            20025, 20033, 20034, 20035, 20036, 20037, 20038, 20039, 20040, 20041, 20042, 20043,
+            20044, 20045, 20046, 20047, 20048, 20049, 20050, 20051, 20052, 20053, 20054, 20272,
+            20273, 20274, 20275, 20276, 20277, 20278, 20279, 20280, 20281, 20289, 20290, 20291,
+            20292, 20293, 20294, 20295, 20296, 20297, 20298, 20299, 20300, 20301, 20302, 20303,
+            20304, 20305, 20306, 20307, 20308, 20309, 20310, 20528, 20529, 20530, 20531, 20532,
+            20533, 20534, 20535, 20536, 20537, 20545, 20546, 20547, 20548, 20549, 20550, 20551,
+            20552, 20553, 20554, 20555, 20556, 20557, 20558, 20559, 20560, 20561, 20562, 20563,
+            20564, 20565, 20566, 20784, 20785, 20786, 20787, 20788, 20789, 20790, 20791, 20792,
+            20793, 20801, 20802, 20803, 20804, 20805, 20806, 20807, 20808, 20809, 20810, 20811,
+            20812, 20813, 20814, 20815, 20816, 20817, 20818, 20819, 20820, 20821, 20822, 21040,
+            21041, 21042, 21043, 21044, 21045, 21046, 21047, 21048, 21049, 21057, 21058, 21059,
+            21060, 21061, 21062, 21063, 21064, 21065, 21066, 21067, 21068, 21069, 21070, 21071,
+            21072, 21073, 21074, 21075, 21076, 21077, 21078, 21296, 21297, 21298, 21299, 21300,
+            21301, 21302, 21303, 21304, 21305, 21313, 21314, 21315, 21316, 21317, 21318, 21319,
+            21320, 21321, 21322, 21323, 21324, 21325, 21326, 21327, 21328, 21329, 21330, 21331,
+            21332, 21333, 21334, 21552, 21553, 21554, 21555, 21556, 21557, 21558, 21559, 21560,
+            21561, 21569, 21570, 21571, 21572, 21573, 21574, 21575, 21576, 21577, 21578, 21579,
+            21580, 21581, 21582, 21583, 21584, 21585, 21586, 21587, 21588, 21589, 21590, 21808,
+            21809, 21810, 21811, 21812, 21813, 21814, 21815, 21816, 21817, 21825, 21826, 21827,
+            21828, 21829, 21830, 21831, 21832, 21833, 21834, 21835, 21836, 21837, 21838, 21839,
+            21840, 21841, 21842, 21843, 21844, 21845, 21846, 22064, 22065, 22066, 22067, 22068,
+            22069, 22070, 22071, 22072, 22073, 22081, 22082, 22083, 22084, 22085, 22086, 22087,
+            22088, 22089, 22090, 22091, 22092, 22093, 22094, 22095, 22096, 22097, 22098, 22099,
+            22100, 22101, 22102}
+    ).
+
+encode32lower(Byte) ->
+    element(
+        Byte + 1,
+        {24929, 24930, 24931, 24932, 24933, 24934, 24935, 24936, 24937, 24938, 24939, 24940, 24941,
+            24942, 24943, 24944, 24945, 24946, 24947, 24948, 24949, 24950, 24951, 24952, 24953,
+            24954, 24882, 24883, 24884, 24885, 24886, 24887, 25185, 25186, 25187, 25188, 25189,
+            25190, 25191, 25192, 25193, 25194, 25195, 25196, 25197, 25198, 25199, 25200, 25201,
+            25202, 25203, 25204, 25205, 25206, 25207, 25208, 25209, 25210, 25138, 25139, 25140,
+            25141, 25142, 25143, 25441, 25442, 25443, 25444, 25445, 25446, 25447, 25448, 25449,
+            25450, 25451, 25452, 25453, 25454, 25455, 25456, 25457, 25458, 25459, 25460, 25461,
+            25462, 25463, 25464, 25465, 25466, 25394, 25395, 25396, 25397, 25398, 25399, 25697,
+            25698, 25699, 25700, 25701, 25702, 25703, 25704, 25705, 25706, 25707, 25708, 25709,
+            25710, 25711, 25712, 25713, 25714, 25715, 25716, 25717, 25718, 25719, 25720, 25721,
+            25722, 25650, 25651, 25652, 25653, 25654, 25655, 25953, 25954, 25955, 25956, 25957,
+            25958, 25959, 25960, 25961, 25962, 25963, 25964, 25965, 25966, 25967, 25968, 25969,
+            25970, 25971, 25972, 25973, 25974, 25975, 25976, 25977, 25978, 25906, 25907, 25908,
+            25909, 25910, 25911, 26209, 26210, 26211, 26212, 26213, 26214, 26215, 26216, 26217,
+            26218, 26219, 26220, 26221, 26222, 26223, 26224, 26225, 26226, 26227, 26228, 26229,
+            26230, 26231, 26232, 26233, 26234, 26162, 26163, 26164, 26165, 26166, 26167, 26465,
+            26466, 26467, 26468, 26469, 26470, 26471, 26472, 26473, 26474, 26475, 26476, 26477,
+            26478, 26479, 26480, 26481, 26482, 26483, 26484, 26485, 26486, 26487, 26488, 26489,
+            26490, 26418, 26419, 26420, 26421, 26422, 26423, 26721, 26722, 26723, 26724, 26725,
+            26726, 26727, 26728, 26729, 26730, 26731, 26732, 26733, 26734, 26735, 26736, 26737,
+            26738, 26739, 26740, 26741, 26742, 26743, 26744, 26745, 26746, 26674, 26675, 26676,
+            26677, 26678, 26679, 26977, 26978, 26979, 26980, 26981, 26982, 26983, 26984, 26985,
+            26986, 26987, 26988, 26989, 26990, 26991, 26992, 26993, 26994, 26995, 26996, 26997,
+            26998, 26999, 27000, 27001, 27002, 26930, 26931, 26932, 26933, 26934, 26935, 27233,
+            27234, 27235, 27236, 27237, 27238, 27239, 27240, 27241, 27242, 27243, 27244, 27245,
+            27246, 27247, 27248, 27249, 27250, 27251, 27252, 27253, 27254, 27255, 27256, 27257,
+            27258, 27186, 27187, 27188, 27189, 27190, 27191, 27489, 27490, 27491, 27492, 27493,
+            27494, 27495, 27496, 27497, 27498, 27499, 27500, 27501, 27502, 27503, 27504, 27505,
+            27506, 27507, 27508, 27509, 27510, 27511, 27512, 27513, 27514, 27442, 27443, 27444,
+            27445, 27446, 27447, 27745, 27746, 27747, 27748, 27749, 27750, 27751, 27752, 27753,
+            27754, 27755, 27756, 27757, 27758, 27759, 27760, 27761, 27762, 27763, 27764, 27765,
+            27766, 27767, 27768, 27769, 27770, 27698, 27699, 27700, 27701, 27702, 27703, 28001,
+            28002, 28003, 28004, 28005, 28006, 28007, 28008, 28009, 28010, 28011, 28012, 28013,
+            28014, 28015, 28016, 28017, 28018, 28019, 28020, 28021, 28022, 28023, 28024, 28025,
+            28026, 27954, 27955, 27956, 27957, 27958, 27959, 28257, 28258, 28259, 28260, 28261,
+            28262, 28263, 28264, 28265, 28266, 28267, 28268, 28269, 28270, 28271, 28272, 28273,
+            28274, 28275, 28276, 28277, 28278, 28279, 28280, 28281, 28282, 28210, 28211, 28212,
+            28213, 28214, 28215, 28513, 28514, 28515, 28516, 28517, 28518, 28519, 28520, 28521,
+            28522, 28523, 28524, 28525, 28526, 28527, 28528, 28529, 28530, 28531, 28532, 28533,
+            28534, 28535, 28536, 28537, 28538, 28466, 28467, 28468, 28469, 28470, 28471, 28769,
+            28770, 28771, 28772, 28773, 28774, 28775, 28776, 28777, 28778, 28779, 28780, 28781,
+            28782, 28783, 28784, 28785, 28786, 28787, 28788, 28789, 28790, 28791, 28792, 28793,
+            28794, 28722, 28723, 28724, 28725, 28726, 28727, 29025, 29026, 29027, 29028, 29029,
+            29030, 29031, 29032, 29033, 29034, 29035, 29036, 29037, 29038, 29039, 29040, 29041,
+            29042, 29043, 29044, 29045, 29046, 29047, 29048, 29049, 29050, 28978, 28979, 28980,
+            28981, 28982, 28983, 29281, 29282, 29283, 29284, 29285, 29286, 29287, 29288, 29289,
+            29290, 29291, 29292, 29293, 29294, 29295, 29296, 29297, 29298, 29299, 29300, 29301,
+            29302, 29303, 29304, 29305, 29306, 29234, 29235, 29236, 29237, 29238, 29239, 29537,
+            29538, 29539, 29540, 29541, 29542, 29543, 29544, 29545, 29546, 29547, 29548, 29549,
+            29550, 29551, 29552, 29553, 29554, 29555, 29556, 29557, 29558, 29559, 29560, 29561,
+            29562, 29490, 29491, 29492, 29493, 29494, 29495, 29793, 29794, 29795, 29796, 29797,
+            29798, 29799, 29800, 29801, 29802, 29803, 29804, 29805, 29806, 29807, 29808, 29809,
+            29810, 29811, 29812, 29813, 29814, 29815, 29816, 29817, 29818, 29746, 29747, 29748,
+            29749, 29750, 29751, 30049, 30050, 30051, 30052, 30053, 30054, 30055, 30056, 30057,
+            30058, 30059, 30060, 30061, 30062, 30063, 30064, 30065, 30066, 30067, 30068, 30069,
+            30070, 30071, 30072, 30073, 30074, 30002, 30003, 30004, 30005, 30006, 30007, 30305,
+            30306, 30307, 30308, 30309, 30310, 30311, 30312, 30313, 30314, 30315, 30316, 30317,
+            30318, 30319, 30320, 30321, 30322, 30323, 30324, 30325, 30326, 30327, 30328, 30329,
+            30330, 30258, 30259, 30260, 30261, 30262, 30263, 30561, 30562, 30563, 30564, 30565,
+            30566, 30567, 30568, 30569, 30570, 30571, 30572, 30573, 30574, 30575, 30576, 30577,
+            30578, 30579, 30580, 30581, 30582, 30583, 30584, 30585, 30586, 30514, 30515, 30516,
+            30517, 30518, 30519, 30817, 30818, 30819, 30820, 30821, 30822, 30823, 30824, 30825,
+            30826, 30827, 30828, 30829, 30830, 30831, 30832, 30833, 30834, 30835, 30836, 30837,
+            30838, 30839, 30840, 30841, 30842, 30770, 30771, 30772, 30773, 30774, 30775, 31073,
+            31074, 31075, 31076, 31077, 31078, 31079, 31080, 31081, 31082, 31083, 31084, 31085,
+            31086, 31087, 31088, 31089, 31090, 31091, 31092, 31093, 31094, 31095, 31096, 31097,
+            31098, 31026, 31027, 31028, 31029, 31030, 31031, 31329, 31330, 31331, 31332, 31333,
+            31334, 31335, 31336, 31337, 31338, 31339, 31340, 31341, 31342, 31343, 31344, 31345,
+            31346, 31347, 31348, 31349, 31350, 31351, 31352, 31353, 31354, 31282, 31283, 31284,
+            31285, 31286, 31287, 12897, 12898, 12899, 12900, 12901, 12902, 12903, 12904, 12905,
+            12906, 12907, 12908, 12909, 12910, 12911, 12912, 12913, 12914, 12915, 12916, 12917,
+            12918, 12919, 12920, 12921, 12922, 12850, 12851, 12852, 12853, 12854, 12855, 13153,
+            13154, 13155, 13156, 13157, 13158, 13159, 13160, 13161, 13162, 13163, 13164, 13165,
+            13166, 13167, 13168, 13169, 13170, 13171, 13172, 13173, 13174, 13175, 13176, 13177,
+            13178, 13106, 13107, 13108, 13109, 13110, 13111, 13409, 13410, 13411, 13412, 13413,
+            13414, 13415, 13416, 13417, 13418, 13419, 13420, 13421, 13422, 13423, 13424, 13425,
+            13426, 13427, 13428, 13429, 13430, 13431, 13432, 13433, 13434, 13362, 13363, 13364,
+            13365, 13366, 13367, 13665, 13666, 13667, 13668, 13669, 13670, 13671, 13672, 13673,
+            13674, 13675, 13676, 13677, 13678, 13679, 13680, 13681, 13682, 13683, 13684, 13685,
+            13686, 13687, 13688, 13689, 13690, 13618, 13619, 13620, 13621, 13622, 13623, 13921,
+            13922, 13923, 13924, 13925, 13926, 13927, 13928, 13929, 13930, 13931, 13932, 13933,
+            13934, 13935, 13936, 13937, 13938, 13939, 13940, 13941, 13942, 13943, 13944, 13945,
+            13946, 13874, 13875, 13876, 13877, 13878, 13879, 14177, 14178, 14179, 14180, 14181,
+            14182, 14183, 14184, 14185, 14186, 14187, 14188, 14189, 14190, 14191, 14192, 14193,
+            14194, 14195, 14196, 14197, 14198, 14199, 14200, 14201, 14202, 14130, 14131, 14132,
+            14133, 14134, 14135}
+    ).
+
+encode32upper(Byte) ->
+    element(
+        Byte + 1,
+        {16705, 16706, 16707, 16708, 16709, 16710, 16711, 16712, 16713, 16714, 16715, 16716, 16717,
+            16718, 16719, 16720, 16721, 16722, 16723, 16724, 16725, 16726, 16727, 16728, 16729,
+            16730, 16690, 16691, 16692, 16693, 16694, 16695, 16961, 16962, 16963, 16964, 16965,
+            16966, 16967, 16968, 16969, 16970, 16971, 16972, 16973, 16974, 16975, 16976, 16977,
+            16978, 16979, 16980, 16981, 16982, 16983, 16984, 16985, 16986, 16946, 16947, 16948,
+            16949, 16950, 16951, 17217, 17218, 17219, 17220, 17221, 17222, 17223, 17224, 17225,
+            17226, 17227, 17228, 17229, 17230, 17231, 17232, 17233, 17234, 17235, 17236, 17237,
+            17238, 17239, 17240, 17241, 17242, 17202, 17203, 17204, 17205, 17206, 17207, 17473,
+            17474, 17475, 17476, 17477, 17478, 17479, 17480, 17481, 17482, 17483, 17484, 17485,
+            17486, 17487, 17488, 17489, 17490, 17491, 17492, 17493, 17494, 17495, 17496, 17497,
+            17498, 17458, 17459, 17460, 17461, 17462, 17463, 17729, 17730, 17731, 17732, 17733,
+            17734, 17735, 17736, 17737, 17738, 17739, 17740, 17741, 17742, 17743, 17744, 17745,
+            17746, 17747, 17748, 17749, 17750, 17751, 17752, 17753, 17754, 17714, 17715, 17716,
+            17717, 17718, 17719, 17985, 17986, 17987, 17988, 17989, 17990, 17991, 17992, 17993,
+            17994, 17995, 17996, 17997, 17998, 17999, 18000, 18001, 18002, 18003, 18004, 18005,
+            18006, 18007, 18008, 18009, 18010, 17970, 17971, 17972, 17973, 17974, 17975, 18241,
+            18242, 18243, 18244, 18245, 18246, 18247, 18248, 18249, 18250, 18251, 18252, 18253,
+            18254, 18255, 18256, 18257, 18258, 18259, 18260, 18261, 18262, 18263, 18264, 18265,
+            18266, 18226, 18227, 18228, 18229, 18230, 18231, 18497, 18498, 18499, 18500, 18501,
+            18502, 18503, 18504, 18505, 18506, 18507, 18508, 18509, 18510, 18511, 18512, 18513,
+            18514, 18515, 18516, 18517, 18518, 18519, 18520, 18521, 18522, 18482, 18483, 18484,
+            18485, 18486, 18487, 18753, 18754, 18755, 18756, 18757, 18758, 18759, 18760, 18761,
+            18762, 18763, 18764, 18765, 18766, 18767, 18768, 18769, 18770, 18771, 18772, 18773,
+            18774, 18775, 18776, 18777, 18778, 18738, 18739, 18740, 18741, 18742, 18743, 19009,
+            19010, 19011, 19012, 19013, 19014, 19015, 19016, 19017, 19018, 19019, 19020, 19021,
+            19022, 19023, 19024, 19025, 19026, 19027, 19028, 19029, 19030, 19031, 19032, 19033,
+            19034, 18994, 18995, 18996, 18997, 18998, 18999, 19265, 19266, 19267, 19268, 19269,
+            19270, 19271, 19272, 19273, 19274, 19275, 19276, 19277, 19278, 19279, 19280, 19281,
+            19282, 19283, 19284, 19285, 19286, 19287, 19288, 19289, 19290, 19250, 19251, 19252,
+            19253, 19254, 19255, 19521, 19522, 19523, 19524, 19525, 19526, 19527, 19528, 19529,
+            19530, 19531, 19532, 19533, 19534, 19535, 19536, 19537, 19538, 19539, 19540, 19541,
+            19542, 19543, 19544, 19545, 19546, 19506, 19507, 19508, 19509, 19510, 19511, 19777,
+            19778, 19779, 19780, 19781, 19782, 19783, 19784, 19785, 19786, 19787, 19788, 19789,
+            19790, 19791, 19792, 19793, 19794, 19795, 19796, 19797, 19798, 19799, 19800, 19801,
+            19802, 19762, 19763, 19764, 19765, 19766, 19767, 20033, 20034, 20035, 20036, 20037,
+            20038, 20039, 20040, 20041, 20042, 20043, 20044, 20045, 20046, 20047, 20048, 20049,
+            20050, 20051, 20052, 20053, 20054, 20055, 20056, 20057, 20058, 20018, 20019, 20020,
+            20021, 20022, 20023, 20289, 20290, 20291, 20292, 20293, 20294, 20295, 20296, 20297,
+            20298, 20299, 20300, 20301, 20302, 20303, 20304, 20305, 20306, 20307, 20308, 20309,
+            20310, 20311, 20312, 20313, 20314, 20274, 20275, 20276, 20277, 20278, 20279, 20545,
+            20546, 20547, 20548, 20549, 20550, 20551, 20552, 20553, 20554, 20555, 20556, 20557,
+            20558, 20559, 20560, 20561, 20562, 20563, 20564, 20565, 20566, 20567, 20568, 20569,
+            20570, 20530, 20531, 20532, 20533, 20534, 20535, 20801, 20802, 20803, 20804, 20805,
+            20806, 20807, 20808, 20809, 20810, 20811, 20812, 20813, 20814, 20815, 20816, 20817,
+            20818, 20819, 20820, 20821, 20822, 20823, 20824, 20825, 20826, 20786, 20787, 20788,
+            20789, 20790, 20791, 21057, 21058, 21059, 21060, 21061, 21062, 21063, 21064, 21065,
+            21066, 21067, 21068, 21069, 21070, 21071, 21072, 21073, 21074, 21075, 21076, 21077,
+            21078, 21079, 21080, 21081, 21082, 21042, 21043, 21044, 21045, 21046, 21047, 21313,
+            21314, 21315, 21316, 21317, 21318, 21319, 21320, 21321, 21322, 21323, 21324, 21325,
+            21326, 21327, 21328, 21329, 21330, 21331, 21332, 21333, 21334, 21335, 21336, 21337,
+            21338, 21298, 21299, 21300, 21301, 21302, 21303, 21569, 21570, 21571, 21572, 21573,
+            21574, 21575, 21576, 21577, 21578, 21579, 21580, 21581, 21582, 21583, 21584, 21585,
+            21586, 21587, 21588, 21589, 21590, 21591, 21592, 21593, 21594, 21554, 21555, 21556,
+            21557, 21558, 21559, 21825, 21826, 21827, 21828, 21829, 21830, 21831, 21832, 21833,
+            21834, 21835, 21836, 21837, 21838, 21839, 21840, 21841, 21842, 21843, 21844, 21845,
+            21846, 21847, 21848, 21849, 21850, 21810, 21811, 21812, 21813, 21814, 21815, 22081,
+            22082, 22083, 22084, 22085, 22086, 22087, 22088, 22089, 22090, 22091, 22092, 22093,
+            22094, 22095, 22096, 22097, 22098, 22099, 22100, 22101, 22102, 22103, 22104, 22105,
+            22106, 22066, 22067, 22068, 22069, 22070, 22071, 22337, 22338, 22339, 22340, 22341,
+            22342, 22343, 22344, 22345, 22346, 22347, 22348, 22349, 22350, 22351, 22352, 22353,
+            22354, 22355, 22356, 22357, 22358, 22359, 22360, 22361, 22362, 22322, 22323, 22324,
+            22325, 22326, 22327, 22593, 22594, 22595, 22596, 22597, 22598, 22599, 22600, 22601,
+            22602, 22603, 22604, 22605, 22606, 22607, 22608, 22609, 22610, 22611, 22612, 22613,
+            22614, 22615, 22616, 22617, 22618, 22578, 22579, 22580, 22581, 22582, 22583, 22849,
+            22850, 22851, 22852, 22853, 22854, 22855, 22856, 22857, 22858, 22859, 22860, 22861,
+            22862, 22863, 22864, 22865, 22866, 22867, 22868, 22869, 22870, 22871, 22872, 22873,
+            22874, 22834, 22835, 22836, 22837, 22838, 22839, 23105, 23106, 23107, 23108, 23109,
+            23110, 23111, 23112, 23113, 23114, 23115, 23116, 23117, 23118, 23119, 23120, 23121,
+            23122, 23123, 23124, 23125, 23126, 23127, 23128, 23129, 23130, 23090, 23091, 23092,
+            23093, 23094, 23095, 12865, 12866, 12867, 12868, 12869, 12870, 12871, 12872, 12873,
+            12874, 12875, 12876, 12877, 12878, 12879, 12880, 12881, 12882, 12883, 12884, 12885,
+            12886, 12887, 12888, 12889, 12890, 12850, 12851, 12852, 12853, 12854, 12855, 13121,
+            13122, 13123, 13124, 13125, 13126, 13127, 13128, 13129, 13130, 13131, 13132, 13133,
+            13134, 13135, 13136, 13137, 13138, 13139, 13140, 13141, 13142, 13143, 13144, 13145,
+            13146, 13106, 13107, 13108, 13109, 13110, 13111, 13377, 13378, 13379, 13380, 13381,
+            13382, 13383, 13384, 13385, 13386, 13387, 13388, 13389, 13390, 13391, 13392, 13393,
+            13394, 13395, 13396, 13397, 13398, 13399, 13400, 13401, 13402, 13362, 13363, 13364,
+            13365, 13366, 13367, 13633, 13634, 13635, 13636, 13637, 13638, 13639, 13640, 13641,
+            13642, 13643, 13644, 13645, 13646, 13647, 13648, 13649, 13650, 13651, 13652, 13653,
+            13654, 13655, 13656, 13657, 13658, 13618, 13619, 13620, 13621, 13622, 13623, 13889,
+            13890, 13891, 13892, 13893, 13894, 13895, 13896, 13897, 13898, 13899, 13900, 13901,
+            13902, 13903, 13904, 13905, 13906, 13907, 13908, 13909, 13910, 13911, 13912, 13913,
+            13914, 13874, 13875, 13876, 13877, 13878, 13879, 14145, 14146, 14147, 14148, 14149,
+            14150, 14151, 14152, 14153, 14154, 14155, 14156, 14157, 14158, 14159, 14160, 14161,
+            14162, 14163, 14164, 14165, 14166, 14167, 14168, 14169, 14170, 14130, 14131, 14132,
+            14133, 14134, 14135}
+    ).
