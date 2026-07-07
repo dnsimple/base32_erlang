@@ -17,17 +17,10 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
--if(?OTP_RELEASE >= 27).
--define(MODULEDOC(Str), -moduledoc(Str)).
--define(DOC(Str), -doc(Str)).
--else.
--define(MODULEDOC(Str), -compile([])).
--define(DOC(Str), -compile([])).
--endif.
 -module(base32).
-?MODULEDOC("""
+-moduledoc """
 Base32 encoding and decoding
-""").
+""".
 
 -compile(
     {inline, [
@@ -48,21 +41,21 @@ Base32 encoding and decoding
     decode/1, decode/2
 ]).
 
-?DOC(#{equiv => encode(Bin, [])}).
+-doc #{equiv => encode(Bin, [])}.
 -spec encode(binary() | string()) -> <<_:_*32>>.
 encode(Bin) when is_binary(Bin) ->
     encode(Bin, true, false, false);
 encode(List) when is_list(List) ->
     encode(iolist_to_binary(List), true, false, false).
 
-?DOC("""
+-doc """
 Encode a string into base 32.
 
 Options:
 - `hex`: whether to use hexadecimal encoding. Defaults to `false`.
 - `lower`: whether to use lowercase encoding. Defaults to `false`.
 - `nopad`: whether to skip padding. Defaults to `false`.
-""").
+""".
 -spec encode(binary() | string(), proplists:proplist()) -> <<_:_*32>>.
 encode(Bin, Opts) when is_binary(Bin) ->
     Hex = proplists:get_bool(hex, Opts),
@@ -72,19 +65,19 @@ encode(Bin, Opts) when is_binary(Bin) ->
 encode(List, Opts) when is_list(List) ->
     encode(iolist_to_binary(List), Opts).
 
-?DOC(#{equiv => decode(Bin, [])}).
+-doc #{equiv => decode(Bin, [])}.
 -spec decode(<<_:_*32>>) -> binary().
 decode(Bin) when is_binary(Bin) ->
     do_decode(Bin, false);
 decode(List) when is_list(List) ->
     do_decode(iolist_to_binary(List), false).
 
-?DOC("""
+-doc """
 Decode a string into base 32.
 
 Options:
 - `hex`: whether decode the input as hexadecimal encoding. Defaults to `false`.
-""").
+""".
 -spec decode(<<_:_*32>> | string(), proplists:proplist()) -> binary().
 decode(Bin, Opts) when is_binary(Bin) andalso is_list(Opts) ->
     Hex = proplists:get_bool(hex, Opts),
