@@ -19,7 +19,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v7.0.0
       - name: Run YAML Lint
-        uses: actionshub/yamllint@main
+        uses: actionshub/yamllint@v1.8.3
 
   markdownlint-cli:
     runs-on: ubuntu-latest
