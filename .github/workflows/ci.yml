@@ -45,7 +45,7 @@ jobs:
         with:
           otp-version: ${{ matrix.otp }}
           rebar3-version: ${{matrix.rebar3}}
-      - uses: actions/cache@v6.0.0
+      - uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cache/rebar3
@@ -54,6 +54,6 @@ jobs:
       - run: make build
       - run: make test
       - name: Coveralls
-        uses: coverallsapp/github-action@v2.0.0
+        uses: coverallsapp/github-action@v2.3.6
         with:
           file: _build/test/covertool/base32.covertool.xml
