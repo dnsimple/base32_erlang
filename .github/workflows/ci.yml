@@ -54,6 +54,6 @@ jobs:
       - run: make build
       - run: make test
       - name: Coveralls
-        uses: coverallsapp/github-action@v2.3.6
+        uses: coverallsapp/github-action@v2.3.8
         with:
           file: _build/test/covertool/base32.covertool.xml
