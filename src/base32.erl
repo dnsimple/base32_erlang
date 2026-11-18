@@ -31,7 +31,7 @@ Base32 encoding and decoding
         {decode32, 1},
         {decode32hex, 1},
         {do_decode, 2},
-        {decode_offset, 1},
+        {padding, 2},
         {error_info, 3}
     ]}
 ).
@@ -57,12 +57,9 @@ Options:
 - `nopad`: whether to skip padding. Defaults to `false`.
 """.
 -spec encode(binary() | string(), proplists:proplist()) -> <<_:_*32>>.
-encode(Bin, Opts) when is_binary(Bin) ->
-    Hex = proplists:get_bool(hex, Opts),
-    Lower = proplists:get_bool(lower, Opts),
-    Pad = not proplists:get_bool(nopad, Opts),
-    encode(Bin, Pad, Hex, Lower);
-encode(List, Opts) when is_list(List) ->
+encode(Bin, Opts) when is_binary(Bin) andalso is_list(Opts) ->
+    encode_opts(Opts, Bin, Opts, true, false, false);
+encode(List, Opts) when is_list(List) andalso is_list(Opts) ->
     encode(iolist_to_binary(List), Opts).
 
 -doc #{equiv => decode(Bin, [])}.
@@ -80,250 +77,569 @@ Options:
 """.
 -spec decode(<<_:_*32>> | string(), proplists:proplist()) -> binary().
 decode(Bin, Opts) when is_binary(Bin) andalso is_list(Opts) ->
-    Hex = proplists:get_bool(hex, Opts),
-    do_decode(Bin, Hex);
+    do_decode(Bin, hex_option(Opts));
 decode(List, Opts) when is_list(List) andalso is_list(Opts) ->
-    Hex = proplists:get_bool(hex, Opts),
-    do_decode(iolist_to_binary(List), Hex).
+    do_decode(iolist_to_binary(List), hex_option(Opts)).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+%% Options that are all atoms take one pass: an atom decides its option wherever it stands, as
+%% with proplists:get_bool/2. Anything else, such as {hex, true}, is left to proplists.
+encode_opts([hex | Opts], Bin, All, Pad, _Hex, Lower) ->
+    encode_opts(Opts, Bin, All, Pad, true, Lower);
+encode_opts([lower | Opts], Bin, All, Pad, Hex, _Lower) ->
+    encode_opts(Opts, Bin, All, Pad, Hex, true);
+encode_opts([nopad | Opts], Bin, All, _Pad, Hex, Lower) ->
+    encode_opts(Opts, Bin, All, false, Hex, Lower);
+encode_opts([], Bin, _All, Pad, Hex, Lower) ->
+    encode(Bin, Pad, Hex, Lower);
+encode_opts(_, Bin, All, _Pad, _Hex, _Lower) ->
+    Hex = proplists:get_bool(hex, All),
+    Lower = proplists:get_bool(lower, All),
+    Pad = not proplists:get_bool(nopad, All),
+    encode(Bin, Pad, Hex, Lower).
+
+%% Atoms other than hex leave it undecided, as with proplists:get_bool/2
+hex_option([hex | _]) -> true;
+hex_option([Opt | Opts]) when is_atom(Opt) -> hex_option(Opts);
+hex_option([]) -> false;
+hex_option(Opts) -> proplists:get_bool(hex, Opts).
+
 encode(Bin, Pad, true, true) ->
-    encode32hexlower(Bin, <<>>, Pad);
+    encode32hexlower(Bin, Pad);
 encode(Bin, Pad, true, false) ->
-    encode32hexupper(Bin, <<>>, Pad);
+    encode32hexupper(Bin, Pad);
 encode(Bin, Pad, false, true) ->
-    encode32lower(Bin, <<>>, Pad);
+    encode32lower(Bin, Pad);
 encode(Bin, Pad, false, false) ->
-    encode32upper(Bin, <<>>, Pad).
+    encode32upper(Bin, Pad).
+
+%% One construction builds a binary of up to 64 octets on the process heap, while appending to
+%% an accumulator makes a writable binary off it, which costs more than encoding a short input.
+%% So 20 to 39 octets, into 32 to 64 characters, encode in one construction, fewer in the
+%% tail's, and 40 or more in a loop that appends 20 at a time. The loop starts from <<>>, which
+%% lets the compiler append in place.
+encode32hexlower(
+    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:10/integer, C5:10/integer, C6:10/integer,
+        C7:10/integer, C8:10/integer, C9:10/integer, C10:10/integer, C11:10/integer, C12:10/integer,
+        C13:10/integer, C14:10/integer, C15:10/integer, C16:10/integer, Rest/binary>>,
+    Pad
+) when byte_size(Rest) < 20 ->
+    <<
+        (encode32hexlower(C1)):16/integer,
+        (encode32hexlower(C2)):16/integer,
+        (encode32hexlower(C3)):16/integer,
+        (encode32hexlower(C4)):16/integer,
+        (encode32hexlower(C5)):16/integer,
+        (encode32hexlower(C6)):16/integer,
+        (encode32hexlower(C7)):16/integer,
+        (encode32hexlower(C8)):16/integer,
+        (encode32hexlower(C9)):16/integer,
+        (encode32hexlower(C10)):16/integer,
+        (encode32hexlower(C11)):16/integer,
+        (encode32hexlower(C12)):16/integer,
+        (encode32hexlower(C13)):16/integer,
+        (encode32hexlower(C14)):16/integer,
+        (encode32hexlower(C15)):16/integer,
+        (encode32hexlower(C16)):16/integer,
+        (encode32hexlower_tail(Rest, Pad))/binary
+    >>;
+encode32hexlower(Bin, Pad) when byte_size(Bin) >= 40 ->
+    encode32hexlower(Bin, <<>>, Pad);
+encode32hexlower(Bin, Pad) ->
+    encode32hexlower_tail(Bin, Pad).
 
 encode32hexlower(
-    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:10/integer, Rest/binary>>,
+    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:10/integer, C5:10/integer, C6:10/integer,
+        C7:10/integer, C8:10/integer, C9:10/integer, C10:10/integer, C11:10/integer, C12:10/integer,
+        C13:10/integer, C14:10/integer, C15:10/integer, C16:10/integer, Rest/binary>>,
     Acc,
     Pad
 ) ->
     encode32hexlower(
         Rest,
         <<Acc/binary, (encode32hexlower(C1)):16/integer, (encode32hexlower(C2)):16/integer,
-            (encode32hexlower(C3)):16/integer, (encode32hexlower(C4)):16/integer>>,
+            (encode32hexlower(C3)):16/integer, (encode32hexlower(C4)):16/integer,
+            (encode32hexlower(C5)):16/integer, (encode32hexlower(C6)):16/integer,
+            (encode32hexlower(C7)):16/integer, (encode32hexlower(C8)):16/integer,
+            (encode32hexlower(C9)):16/integer, (encode32hexlower(C10)):16/integer,
+            (encode32hexlower(C11)):16/integer, (encode32hexlower(C12)):16/integer,
+            (encode32hexlower(C13)):16/integer, (encode32hexlower(C14)):16/integer,
+            (encode32hexlower(C15)):16/integer, (encode32hexlower(C16)):16/integer>>,
         Pad
     );
-encode32hexlower(
-    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:2/integer>>,
-    Acc,
-    Pad
+encode32hexlower(Bin, Acc, Pad) ->
+    <<Acc/binary, (encode32hexlower_tail(Bin, Pad))/binary>>.
+
+encode32hexlower_tail(
+    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:10/integer, Rest/binary>>, Pad
 ) ->
-    maybe_pad(
-        <<Acc/binary, (encode32hexlower(C1)):16/integer, (encode32hexlower(C2)):16/integer,
-            (encode32hexlower(C3)):16/integer, (encode32hexlower(C4 bsl 3) band 255):8/integer>>,
-        Pad,
-        1
-    );
-encode32hexlower(
-    <<C1:10/integer, C2:10/integer, C3:4/integer>>,
-    Acc,
-    Pad
-) ->
-    maybe_pad(
-        <<Acc/binary, (encode32hexlower(C1)):16/integer, (encode32hexlower(C2)):16/integer,
-            (encode32hexlower(C3 bsl 1) band 255):8/integer>>,
-        Pad,
-        3
-    );
-encode32hexlower(
-    <<C1:10/integer, C2:6/integer>>,
-    Acc,
-    Pad
-) ->
-    maybe_pad(
-        <<Acc/binary, (encode32hexlower(C1)):16/integer, (encode32hexlower(C2 bsl 4)):16/integer>>,
-        Pad,
-        4
-    );
-encode32hexlower(
-    <<C1:8/integer>>,
-    Acc,
-    Pad
-) ->
-    maybe_pad(
-        <<Acc/binary, (encode32hexlower(C1 bsl 2)):16/integer>>,
-        Pad,
-        6
-    );
-encode32hexlower(<<>>, Acc, _) ->
-    Acc.
+    <<
+        (encode32hexlower(C1)):16/integer,
+        (encode32hexlower(C2)):16/integer,
+        (encode32hexlower(C3)):16/integer,
+        (encode32hexlower(C4)):16/integer,
+        (encode32hexlower_tail(Rest, Pad))/binary
+    >>;
+encode32hexlower_tail(<<C1:10/integer, C2:10/integer, C3:10/integer, C4:2/integer>>, Pad) ->
+    <<
+        (encode32hexlower(C1)):16/integer,
+        (encode32hexlower(C2)):16/integer,
+        (encode32hexlower(C3)):16/integer,
+        ((encode32hexlower(C4 bsl 3)) band 255):8/integer,
+        (padding(Pad, 1))/binary
+    >>;
+encode32hexlower_tail(<<C1:10/integer, C2:10/integer, C3:4/integer>>, Pad) ->
+    <<
+        (encode32hexlower(C1)):16/integer,
+        (encode32hexlower(C2)):16/integer,
+        ((encode32hexlower(C3 bsl 1)) band 255):8/integer,
+        (padding(Pad, 3))/binary
+    >>;
+encode32hexlower_tail(<<C1:10/integer, C2:6/integer>>, Pad) ->
+    <<
+        (encode32hexlower(C1)):16/integer,
+        (encode32hexlower(C2 bsl 4)):16/integer,
+        (padding(Pad, 4))/binary
+    >>;
+encode32hexlower_tail(<<C1:8/integer>>, Pad) ->
+    <<(encode32hexlower(C1 bsl 2)):16/integer, (padding(Pad, 6))/binary>>;
+encode32hexlower_tail(<<>>, _Pad) ->
+    <<>>.
 
 encode32hexupper(
-    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:10/integer, Rest/binary>>,
+    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:10/integer, C5:10/integer, C6:10/integer,
+        C7:10/integer, C8:10/integer, C9:10/integer, C10:10/integer, C11:10/integer, C12:10/integer,
+        C13:10/integer, C14:10/integer, C15:10/integer, C16:10/integer, Rest/binary>>,
+    Pad
+) when byte_size(Rest) < 20 ->
+    <<
+        (encode32hexupper(C1)):16/integer,
+        (encode32hexupper(C2)):16/integer,
+        (encode32hexupper(C3)):16/integer,
+        (encode32hexupper(C4)):16/integer,
+        (encode32hexupper(C5)):16/integer,
+        (encode32hexupper(C6)):16/integer,
+        (encode32hexupper(C7)):16/integer,
+        (encode32hexupper(C8)):16/integer,
+        (encode32hexupper(C9)):16/integer,
+        (encode32hexupper(C10)):16/integer,
+        (encode32hexupper(C11)):16/integer,
+        (encode32hexupper(C12)):16/integer,
+        (encode32hexupper(C13)):16/integer,
+        (encode32hexupper(C14)):16/integer,
+        (encode32hexupper(C15)):16/integer,
+        (encode32hexupper(C16)):16/integer,
+        (encode32hexupper_tail(Rest, Pad))/binary
+    >>;
+encode32hexupper(Bin, Pad) when byte_size(Bin) >= 40 ->
+    encode32hexupper(Bin, <<>>, Pad);
+encode32hexupper(Bin, Pad) ->
+    encode32hexupper_tail(Bin, Pad).
+
+encode32hexupper(
+    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:10/integer, C5:10/integer, C6:10/integer,
+        C7:10/integer, C8:10/integer, C9:10/integer, C10:10/integer, C11:10/integer, C12:10/integer,
+        C13:10/integer, C14:10/integer, C15:10/integer, C16:10/integer, Rest/binary>>,
     Acc,
     Pad
 ) ->
     encode32hexupper(
         Rest,
         <<Acc/binary, (encode32hexupper(C1)):16/integer, (encode32hexupper(C2)):16/integer,
-            (encode32hexupper(C3)):16/integer, (encode32hexupper(C4)):16/integer>>,
+            (encode32hexupper(C3)):16/integer, (encode32hexupper(C4)):16/integer,
+            (encode32hexupper(C5)):16/integer, (encode32hexupper(C6)):16/integer,
+            (encode32hexupper(C7)):16/integer, (encode32hexupper(C8)):16/integer,
+            (encode32hexupper(C9)):16/integer, (encode32hexupper(C10)):16/integer,
+            (encode32hexupper(C11)):16/integer, (encode32hexupper(C12)):16/integer,
+            (encode32hexupper(C13)):16/integer, (encode32hexupper(C14)):16/integer,
+            (encode32hexupper(C15)):16/integer, (encode32hexupper(C16)):16/integer>>,
         Pad
     );
-encode32hexupper(
-    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:2/integer>>,
-    Acc,
-    Pad
+encode32hexupper(Bin, Acc, Pad) ->
+    <<Acc/binary, (encode32hexupper_tail(Bin, Pad))/binary>>.
+
+encode32hexupper_tail(
+    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:10/integer, Rest/binary>>, Pad
 ) ->
-    maybe_pad(
-        <<Acc/binary, (encode32hexupper(C1)):16/integer, (encode32hexupper(C2)):16/integer,
-            (encode32hexupper(C3)):16/integer, (encode32hexupper(C4 bsl 3) band 255):8/integer>>,
-        Pad,
-        1
-    );
-encode32hexupper(
-    <<C1:10/integer, C2:10/integer, C3:4/integer>>,
-    Acc,
-    Pad
-) ->
-    maybe_pad(
-        <<Acc/binary, (encode32hexupper(C1)):16/integer, (encode32hexupper(C2)):16/integer,
-            (encode32hexupper(C3 bsl 1) band 255):8/integer>>,
-        Pad,
-        3
-    );
-encode32hexupper(
-    <<C1:10/integer, C2:6/integer>>,
-    Acc,
-    Pad
-) ->
-    maybe_pad(
-        <<Acc/binary, (encode32hexupper(C1)):16/integer, (encode32hexupper(C2 bsl 4)):16/integer>>,
-        Pad,
-        4
-    );
-encode32hexupper(
-    <<C1:8/integer>>,
-    Acc,
-    Pad
-) ->
-    maybe_pad(
-        <<Acc/binary, (encode32hexupper(C1 bsl 2)):16/integer>>,
-        Pad,
-        6
-    );
-encode32hexupper(<<>>, Acc, _) ->
-    Acc.
+    <<
+        (encode32hexupper(C1)):16/integer,
+        (encode32hexupper(C2)):16/integer,
+        (encode32hexupper(C3)):16/integer,
+        (encode32hexupper(C4)):16/integer,
+        (encode32hexupper_tail(Rest, Pad))/binary
+    >>;
+encode32hexupper_tail(<<C1:10/integer, C2:10/integer, C3:10/integer, C4:2/integer>>, Pad) ->
+    <<
+        (encode32hexupper(C1)):16/integer,
+        (encode32hexupper(C2)):16/integer,
+        (encode32hexupper(C3)):16/integer,
+        ((encode32hexupper(C4 bsl 3)) band 255):8/integer,
+        (padding(Pad, 1))/binary
+    >>;
+encode32hexupper_tail(<<C1:10/integer, C2:10/integer, C3:4/integer>>, Pad) ->
+    <<
+        (encode32hexupper(C1)):16/integer,
+        (encode32hexupper(C2)):16/integer,
+        ((encode32hexupper(C3 bsl 1)) band 255):8/integer,
+        (padding(Pad, 3))/binary
+    >>;
+encode32hexupper_tail(<<C1:10/integer, C2:6/integer>>, Pad) ->
+    <<
+        (encode32hexupper(C1)):16/integer,
+        (encode32hexupper(C2 bsl 4)):16/integer,
+        (padding(Pad, 4))/binary
+    >>;
+encode32hexupper_tail(<<C1:8/integer>>, Pad) ->
+    <<(encode32hexupper(C1 bsl 2)):16/integer, (padding(Pad, 6))/binary>>;
+encode32hexupper_tail(<<>>, _Pad) ->
+    <<>>.
 
 encode32lower(
-    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:10/integer, Rest/binary>>,
+    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:10/integer, C5:10/integer, C6:10/integer,
+        C7:10/integer, C8:10/integer, C9:10/integer, C10:10/integer, C11:10/integer, C12:10/integer,
+        C13:10/integer, C14:10/integer, C15:10/integer, C16:10/integer, Rest/binary>>,
+    Pad
+) when byte_size(Rest) < 20 ->
+    <<
+        (encode32lower(C1)):16/integer,
+        (encode32lower(C2)):16/integer,
+        (encode32lower(C3)):16/integer,
+        (encode32lower(C4)):16/integer,
+        (encode32lower(C5)):16/integer,
+        (encode32lower(C6)):16/integer,
+        (encode32lower(C7)):16/integer,
+        (encode32lower(C8)):16/integer,
+        (encode32lower(C9)):16/integer,
+        (encode32lower(C10)):16/integer,
+        (encode32lower(C11)):16/integer,
+        (encode32lower(C12)):16/integer,
+        (encode32lower(C13)):16/integer,
+        (encode32lower(C14)):16/integer,
+        (encode32lower(C15)):16/integer,
+        (encode32lower(C16)):16/integer,
+        (encode32lower_tail(Rest, Pad))/binary
+    >>;
+encode32lower(Bin, Pad) when byte_size(Bin) >= 40 ->
+    encode32lower(Bin, <<>>, Pad);
+encode32lower(Bin, Pad) ->
+    encode32lower_tail(Bin, Pad).
+
+encode32lower(
+    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:10/integer, C5:10/integer, C6:10/integer,
+        C7:10/integer, C8:10/integer, C9:10/integer, C10:10/integer, C11:10/integer, C12:10/integer,
+        C13:10/integer, C14:10/integer, C15:10/integer, C16:10/integer, Rest/binary>>,
     Acc,
     Pad
 ) ->
     encode32lower(
         Rest,
         <<Acc/binary, (encode32lower(C1)):16/integer, (encode32lower(C2)):16/integer,
-            (encode32lower(C3)):16/integer, (encode32lower(C4)):16/integer>>,
+            (encode32lower(C3)):16/integer, (encode32lower(C4)):16/integer,
+            (encode32lower(C5)):16/integer, (encode32lower(C6)):16/integer,
+            (encode32lower(C7)):16/integer, (encode32lower(C8)):16/integer,
+            (encode32lower(C9)):16/integer, (encode32lower(C10)):16/integer,
+            (encode32lower(C11)):16/integer, (encode32lower(C12)):16/integer,
+            (encode32lower(C13)):16/integer, (encode32lower(C14)):16/integer,
+            (encode32lower(C15)):16/integer, (encode32lower(C16)):16/integer>>,
         Pad
     );
-encode32lower(
-    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:2/integer>>,
-    Acc,
-    Pad
+encode32lower(Bin, Acc, Pad) ->
+    <<Acc/binary, (encode32lower_tail(Bin, Pad))/binary>>.
+
+encode32lower_tail(
+    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:10/integer, Rest/binary>>, Pad
 ) ->
-    maybe_pad(
-        <<Acc/binary, (encode32lower(C1)):16/integer, (encode32lower(C2)):16/integer,
-            (encode32lower(C3)):16/integer, (encode32lower(C4 bsl 3) band 255):8/integer>>,
-        Pad,
-        1
-    );
-encode32lower(
-    <<C1:10/integer, C2:10/integer, C3:4/integer>>,
-    Acc,
-    Pad
-) ->
-    maybe_pad(
-        <<Acc/binary, (encode32lower(C1)):16/integer, (encode32lower(C2)):16/integer,
-            (encode32lower(C3 bsl 1) band 255):8/integer>>,
-        Pad,
-        3
-    );
-encode32lower(
-    <<C1:10/integer, C2:6/integer>>,
-    Acc,
-    Pad
-) ->
-    maybe_pad(
-        <<Acc/binary, (encode32lower(C1)):16/integer, (encode32lower(C2 bsl 4)):16/integer>>,
-        Pad,
-        4
-    );
-encode32lower(<<C1:8/integer>>, Acc, Pad) ->
-    maybe_pad(
-        <<Acc/binary, (encode32lower(C1 bsl 2)):16/integer>>,
-        Pad,
-        6
-    );
-encode32lower(<<>>, Acc, _) ->
-    Acc.
+    <<
+        (encode32lower(C1)):16/integer,
+        (encode32lower(C2)):16/integer,
+        (encode32lower(C3)):16/integer,
+        (encode32lower(C4)):16/integer,
+        (encode32lower_tail(Rest, Pad))/binary
+    >>;
+encode32lower_tail(<<C1:10/integer, C2:10/integer, C3:10/integer, C4:2/integer>>, Pad) ->
+    <<
+        (encode32lower(C1)):16/integer,
+        (encode32lower(C2)):16/integer,
+        (encode32lower(C3)):16/integer,
+        ((encode32lower(C4 bsl 3)) band 255):8/integer,
+        (padding(Pad, 1))/binary
+    >>;
+encode32lower_tail(<<C1:10/integer, C2:10/integer, C3:4/integer>>, Pad) ->
+    <<
+        (encode32lower(C1)):16/integer,
+        (encode32lower(C2)):16/integer,
+        ((encode32lower(C3 bsl 1)) band 255):8/integer,
+        (padding(Pad, 3))/binary
+    >>;
+encode32lower_tail(<<C1:10/integer, C2:6/integer>>, Pad) ->
+    <<
+        (encode32lower(C1)):16/integer,
+        (encode32lower(C2 bsl 4)):16/integer,
+        (padding(Pad, 4))/binary
+    >>;
+encode32lower_tail(<<C1:8/integer>>, Pad) ->
+    <<(encode32lower(C1 bsl 2)):16/integer, (padding(Pad, 6))/binary>>;
+encode32lower_tail(<<>>, _Pad) ->
+    <<>>.
 
 encode32upper(
-    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:10/integer, Rest/binary>>,
+    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:10/integer, C5:10/integer, C6:10/integer,
+        C7:10/integer, C8:10/integer, C9:10/integer, C10:10/integer, C11:10/integer, C12:10/integer,
+        C13:10/integer, C14:10/integer, C15:10/integer, C16:10/integer, Rest/binary>>,
+    Pad
+) when byte_size(Rest) < 20 ->
+    <<
+        (encode32upper(C1)):16/integer,
+        (encode32upper(C2)):16/integer,
+        (encode32upper(C3)):16/integer,
+        (encode32upper(C4)):16/integer,
+        (encode32upper(C5)):16/integer,
+        (encode32upper(C6)):16/integer,
+        (encode32upper(C7)):16/integer,
+        (encode32upper(C8)):16/integer,
+        (encode32upper(C9)):16/integer,
+        (encode32upper(C10)):16/integer,
+        (encode32upper(C11)):16/integer,
+        (encode32upper(C12)):16/integer,
+        (encode32upper(C13)):16/integer,
+        (encode32upper(C14)):16/integer,
+        (encode32upper(C15)):16/integer,
+        (encode32upper(C16)):16/integer,
+        (encode32upper_tail(Rest, Pad))/binary
+    >>;
+encode32upper(Bin, Pad) when byte_size(Bin) >= 40 ->
+    encode32upper(Bin, <<>>, Pad);
+encode32upper(Bin, Pad) ->
+    encode32upper_tail(Bin, Pad).
+
+encode32upper(
+    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:10/integer, C5:10/integer, C6:10/integer,
+        C7:10/integer, C8:10/integer, C9:10/integer, C10:10/integer, C11:10/integer, C12:10/integer,
+        C13:10/integer, C14:10/integer, C15:10/integer, C16:10/integer, Rest/binary>>,
     Acc,
     Pad
 ) ->
     encode32upper(
         Rest,
         <<Acc/binary, (encode32upper(C1)):16/integer, (encode32upper(C2)):16/integer,
-            (encode32upper(C3)):16/integer, (encode32upper(C4)):16/integer>>,
+            (encode32upper(C3)):16/integer, (encode32upper(C4)):16/integer,
+            (encode32upper(C5)):16/integer, (encode32upper(C6)):16/integer,
+            (encode32upper(C7)):16/integer, (encode32upper(C8)):16/integer,
+            (encode32upper(C9)):16/integer, (encode32upper(C10)):16/integer,
+            (encode32upper(C11)):16/integer, (encode32upper(C12)):16/integer,
+            (encode32upper(C13)):16/integer, (encode32upper(C14)):16/integer,
+            (encode32upper(C15)):16/integer, (encode32upper(C16)):16/integer>>,
         Pad
     );
-encode32upper(
-    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:2/integer>>,
-    Acc,
-    Pad
-) ->
-    maybe_pad(
-        <<Acc/binary, (encode32upper(C1)):16/integer, (encode32upper(C2)):16/integer,
-            (encode32upper(C3)):16/integer, (encode32upper(C4 bsl 3) band 255):8/integer>>,
-        Pad,
-        1
-    );
-encode32upper(
-    <<C1:10/integer, C2:10/integer, C3:4/integer>>,
-    Acc,
-    Pad
-) ->
-    maybe_pad(
-        <<Acc/binary, (encode32upper(C1)):16/integer, (encode32upper(C2)):16/integer,
-            (encode32upper(C3 bsl 1) band 255):8/integer>>,
-        Pad,
-        3
-    );
-encode32upper(
-    <<C1:10/integer, C2:6/integer>>,
-    Acc,
-    Pad
-) ->
-    maybe_pad(
-        <<Acc/binary, (encode32upper(C1)):16/integer, (encode32upper(C2 bsl 4)):16/integer>>,
-        Pad,
-        4
-    );
-encode32upper(<<C1:8/integer>>, Acc, Pad) ->
-    maybe_pad(
-        <<Acc/binary, (encode32upper(C1 bsl 2)):16/integer>>,
-        Pad,
-        6
-    );
-encode32upper(<<>>, Acc, _) ->
-    Acc.
+encode32upper(Bin, Acc, Pad) ->
+    <<Acc/binary, (encode32upper_tail(Bin, Pad))/binary>>.
 
+encode32upper_tail(
+    <<C1:10/integer, C2:10/integer, C3:10/integer, C4:10/integer, Rest/binary>>, Pad
+) ->
+    <<
+        (encode32upper(C1)):16/integer,
+        (encode32upper(C2)):16/integer,
+        (encode32upper(C3)):16/integer,
+        (encode32upper(C4)):16/integer,
+        (encode32upper_tail(Rest, Pad))/binary
+    >>;
+encode32upper_tail(<<C1:10/integer, C2:10/integer, C3:10/integer, C4:2/integer>>, Pad) ->
+    <<
+        (encode32upper(C1)):16/integer,
+        (encode32upper(C2)):16/integer,
+        (encode32upper(C3)):16/integer,
+        ((encode32upper(C4 bsl 3)) band 255):8/integer,
+        (padding(Pad, 1))/binary
+    >>;
+encode32upper_tail(<<C1:10/integer, C2:10/integer, C3:4/integer>>, Pad) ->
+    <<
+        (encode32upper(C1)):16/integer,
+        (encode32upper(C2)):16/integer,
+        ((encode32upper(C3 bsl 1)) band 255):8/integer,
+        (padding(Pad, 3))/binary
+    >>;
+encode32upper_tail(<<C1:10/integer, C2:6/integer>>, Pad) ->
+    <<
+        (encode32upper(C1)):16/integer,
+        (encode32upper(C2 bsl 4)):16/integer,
+        (padding(Pad, 4))/binary
+    >>;
+encode32upper_tail(<<C1:8/integer>>, Pad) ->
+    <<(encode32upper(C1 bsl 2)):16/integer, (padding(Pad, 6))/binary>>;
+encode32upper_tail(<<>>, _Pad) ->
+    <<>>.
+
+%% The lookups give `bad` for an octet outside the alphabet, which fails the construction of the
+%% binary it goes into (badarg), or the shift of a last character (badarith). Catching that once
+%% costs less than checking every character.
 do_decode(Bin, false) ->
-    do_decode32(Bin);
+    try
+        do_decode32(Bin)
+    catch
+        error:Reason when Reason =:= badarg; Reason =:= badarith ->
+            non_alphabetic(Bin, false)
+    end;
 do_decode(Bin, true) ->
-    do_decode32hex(Bin).
+    try
+        do_decode32hex(Bin)
+    catch
+        error:Reason when Reason =:= badarg; Reason =:= badarith ->
+            non_alphabetic(Bin, true)
+    end.
 
+%% Only the last group of 8 characters can hold padding. Without padding, whole groups decode as
+%% they are, and otherwise the tail, the last group or what is left after the whole ones, decodes
+%% on its own and goes at the end of the groups before it.
+%%
+%% As with encoding, results of up to 64 octets are built without appending: up to 12 groups, 4
+%% at a time and then the 1 to 3 left over, in one construction each. More groups go through a
+%% comprehension, which sizes its binary up front.
 do_decode32hex(<<>>) ->
     <<>>;
 do_decode32hex(Bin) ->
-    Offset = decode_offset(Bin),
-    <<Main:Offset/binary-unit:64, Rest/binary>> = Bin,
-    Main1 = <<
+    Size = byte_size(Bin),
+    case Bin of
+        <<_:(Size - 1)/binary, $=>> -> do_decode32hex(Bin, (Size - 1) div 8);
+        _ when Size rem 8 =:= 0 -> decode32hex_groups(Bin, <<>>);
+        _ -> do_decode32hex(Bin, Size div 8)
+    end.
+
+do_decode32hex(Bin, Groups) ->
+    <<Main:Groups/binary-unit:64, Rest/binary>> = Bin,
+    case decode32hex_tail(Rest) of
+        incorrect_padding ->
+            %% A character outside the alphabet before the tail takes precedence
+            _ = decode32hex_groups(Main, <<>>),
+            error_info(Bin, incorrect_padding, ?FUNCTION_NAME);
+        Tail ->
+            decode32hex_groups(Main, Tail)
+    end.
+
+decode32hex_groups(
+    <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
+        C7:8/integer, C8:8/integer, C9:8/integer, C10:8/integer, C11:8/integer, C12:8/integer,
+        C13:8/integer, C14:8/integer, C15:8/integer, C16:8/integer, C17:8/integer, C18:8/integer,
+        C19:8/integer, C20:8/integer, C21:8/integer, C22:8/integer, C23:8/integer, C24:8/integer,
+        C25:8/integer, C26:8/integer, C27:8/integer, C28:8/integer, C29:8/integer, C30:8/integer,
+        C31:8/integer, C32:8/integer, Rest/binary>>,
+    Tail
+) when byte_size(Rest) =< 64 ->
+    <<
+        (decode32hex(C1)):5/integer,
+        (decode32hex(C2)):5/integer,
+        (decode32hex(C3)):5/integer,
+        (decode32hex(C4)):5/integer,
+        (decode32hex(C5)):5/integer,
+        (decode32hex(C6)):5/integer,
+        (decode32hex(C7)):5/integer,
+        (decode32hex(C8)):5/integer,
+        (decode32hex(C9)):5/integer,
+        (decode32hex(C10)):5/integer,
+        (decode32hex(C11)):5/integer,
+        (decode32hex(C12)):5/integer,
+        (decode32hex(C13)):5/integer,
+        (decode32hex(C14)):5/integer,
+        (decode32hex(C15)):5/integer,
+        (decode32hex(C16)):5/integer,
+        (decode32hex(C17)):5/integer,
+        (decode32hex(C18)):5/integer,
+        (decode32hex(C19)):5/integer,
+        (decode32hex(C20)):5/integer,
+        (decode32hex(C21)):5/integer,
+        (decode32hex(C22)):5/integer,
+        (decode32hex(C23)):5/integer,
+        (decode32hex(C24)):5/integer,
+        (decode32hex(C25)):5/integer,
+        (decode32hex(C26)):5/integer,
+        (decode32hex(C27)):5/integer,
+        (decode32hex(C28)):5/integer,
+        (decode32hex(C29)):5/integer,
+        (decode32hex(C30)):5/integer,
+        (decode32hex(C31)):5/integer,
+        (decode32hex(C32)):5/integer,
+        (decode32hex_groups(Rest, Tail))/bitstring
+    >>;
+decode32hex_groups(
+    <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
+        C7:8/integer, C8:8/integer, C9:8/integer, C10:8/integer, C11:8/integer, C12:8/integer,
+        C13:8/integer, C14:8/integer, C15:8/integer, C16:8/integer, C17:8/integer, C18:8/integer,
+        C19:8/integer, C20:8/integer, C21:8/integer, C22:8/integer, C23:8/integer, C24:8/integer>>,
+    Tail
+) ->
+    <<
+        (decode32hex(C1)):5/integer,
+        (decode32hex(C2)):5/integer,
+        (decode32hex(C3)):5/integer,
+        (decode32hex(C4)):5/integer,
+        (decode32hex(C5)):5/integer,
+        (decode32hex(C6)):5/integer,
+        (decode32hex(C7)):5/integer,
+        (decode32hex(C8)):5/integer,
+        (decode32hex(C9)):5/integer,
+        (decode32hex(C10)):5/integer,
+        (decode32hex(C11)):5/integer,
+        (decode32hex(C12)):5/integer,
+        (decode32hex(C13)):5/integer,
+        (decode32hex(C14)):5/integer,
+        (decode32hex(C15)):5/integer,
+        (decode32hex(C16)):5/integer,
+        (decode32hex(C17)):5/integer,
+        (decode32hex(C18)):5/integer,
+        (decode32hex(C19)):5/integer,
+        (decode32hex(C20)):5/integer,
+        (decode32hex(C21)):5/integer,
+        (decode32hex(C22)):5/integer,
+        (decode32hex(C23)):5/integer,
+        (decode32hex(C24)):5/integer,
+        Tail/bitstring
+    >>;
+decode32hex_groups(
+    <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
+        C7:8/integer, C8:8/integer, C9:8/integer, C10:8/integer, C11:8/integer, C12:8/integer,
+        C13:8/integer, C14:8/integer, C15:8/integer, C16:8/integer>>,
+    Tail
+) ->
+    <<
+        (decode32hex(C1)):5/integer,
+        (decode32hex(C2)):5/integer,
+        (decode32hex(C3)):5/integer,
+        (decode32hex(C4)):5/integer,
+        (decode32hex(C5)):5/integer,
+        (decode32hex(C6)):5/integer,
+        (decode32hex(C7)):5/integer,
+        (decode32hex(C8)):5/integer,
+        (decode32hex(C9)):5/integer,
+        (decode32hex(C10)):5/integer,
+        (decode32hex(C11)):5/integer,
+        (decode32hex(C12)):5/integer,
+        (decode32hex(C13)):5/integer,
+        (decode32hex(C14)):5/integer,
+        (decode32hex(C15)):5/integer,
+        (decode32hex(C16)):5/integer,
+        Tail/bitstring
+    >>;
+decode32hex_groups(
+    <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
+        C7:8/integer, C8:8/integer>>,
+    Tail
+) ->
+    <<
+        (decode32hex(C1)):5/integer,
+        (decode32hex(C2)):5/integer,
+        (decode32hex(C3)):5/integer,
+        (decode32hex(C4)):5/integer,
+        (decode32hex(C5)):5/integer,
+        (decode32hex(C6)):5/integer,
+        (decode32hex(C7)):5/integer,
+        (decode32hex(C8)):5/integer,
+        Tail/bitstring
+    >>;
+decode32hex_groups(<<>>, Tail) ->
+    Tail;
+decode32hex_groups(Groups, Tail) ->
+    Bin = <<
         <<
             (decode32hex(C1)):5/integer,
             (decode32hex(C2)):5/integer,
@@ -335,58 +651,217 @@ do_decode32hex(Bin) ->
             (decode32hex(C8)):5/integer
         >>
      || <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
-            C7:8/integer, C8:8/integer>> <= Main
+            C7:8/integer, C8:8/integer>> <= Groups
     >>,
-    case Rest of
-        <<C1:8/integer, C2:8/integer, 61/integer, 61/integer, 61/integer, 61/integer, 61/integer,
-            61/integer>> ->
-            <<Main1/bitstring, (decode32hex(C1)):5/integer, (decode32hex(C2) bsr 2):3/integer>>;
-        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, 61/integer, 61/integer,
-            61/integer, 61/integer>> ->
-            <<Main1/bitstring, (decode32hex(C1)):5/integer, (decode32hex(C2)):5/integer,
-                (decode32hex(C3)):5/integer, (decode32hex(C4) bsr 4):1/integer>>;
-        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, 61/integer,
-            61/integer, 61/integer>> ->
-            <<Main1/bitstring, (decode32hex(C1)):5/integer, (decode32hex(C2)):5/integer,
-                (decode32hex(C3)):5/integer, (decode32hex(C4)):5/integer,
-                (decode32hex(C5) bsr 1):4/integer>>;
-        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
-            C7:8/integer, 61/integer>> ->
-            <<Main1/bitstring, (decode32hex(C1)):5/integer, (decode32hex(C2)):5/integer,
-                (decode32hex(C3)):5/integer, (decode32hex(C4)):5/integer,
-                (decode32hex(C5)):5/integer, (decode32hex(C6)):5/integer,
-                (decode32hex(C7) bsr 3):2/integer>>;
-        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
-            C7:8/integer, C8:8/integer>> ->
-            <<Main1/bitstring, (decode32hex(C1)):5/integer, (decode32hex(C2)):5/integer,
-                (decode32hex(C3)):5/integer, (decode32hex(C4)):5/integer,
-                (decode32hex(C5)):5/integer, (decode32hex(C6)):5/integer,
-                (decode32hex(C7)):5/integer, (decode32hex(C8)):5/integer>>;
-        <<C1:8/integer, C2:8/integer>> ->
-            <<Main1/bitstring, (decode32hex(C1)):5/integer, (decode32hex(C2) bsr 2):3/integer>>;
-        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer>> ->
-            <<Main1/bitstring, (decode32hex(C1)):5/integer, (decode32hex(C2)):5/integer,
-                (decode32hex(C3)):5/integer, (decode32hex(C4) bsr 4):1/integer>>;
-        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer>> ->
-            <<Main1/bitstring, (decode32hex(C1)):5/integer, (decode32hex(C2)):5/integer,
-                (decode32hex(C3)):5/integer, (decode32hex(C4)):5/integer,
-                (decode32hex(C5) bsr 1):4/integer>>;
-        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
-            C7:8/integer>> ->
-            <<Main1/bitstring, (decode32hex(C1)):5/integer, (decode32hex(C2)):5/integer,
-                (decode32hex(C3)):5/integer, (decode32hex(C4)):5/integer,
-                (decode32hex(C5)):5/integer, (decode32hex(C6)):5/integer,
-                (decode32hex(C7) bsr 3):2/integer>>;
-        _ ->
-            error_info(Bin, incorrect_padding, ?FUNCTION_NAME)
-    end.
+    <<Bin/binary, Tail/bitstring>>.
+
+decode32hex_tail(<<C1:8/integer, C2:8/integer, "======">>) ->
+    <<(decode32hex(C1)):5/integer, (decode32hex(C2) bsr 2):3/integer>>;
+decode32hex_tail(<<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, "====">>) ->
+    <<
+        (decode32hex(C1)):5/integer,
+        (decode32hex(C2)):5/integer,
+        (decode32hex(C3)):5/integer,
+        (decode32hex(C4) bsr 4):1/integer
+    >>;
+decode32hex_tail(<<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, "===">>) ->
+    <<
+        (decode32hex(C1)):5/integer,
+        (decode32hex(C2)):5/integer,
+        (decode32hex(C3)):5/integer,
+        (decode32hex(C4)):5/integer,
+        (decode32hex(C5) bsr 1):4/integer
+    >>;
+decode32hex_tail(
+    <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
+        C7:8/integer, "=">>
+) ->
+    <<
+        (decode32hex(C1)):5/integer,
+        (decode32hex(C2)):5/integer,
+        (decode32hex(C3)):5/integer,
+        (decode32hex(C4)):5/integer,
+        (decode32hex(C5)):5/integer,
+        (decode32hex(C6)):5/integer,
+        (decode32hex(C7) bsr 3):2/integer
+    >>;
+decode32hex_tail(<<C1:8/integer, C2:8/integer>>) ->
+    <<(decode32hex(C1)):5/integer, (decode32hex(C2) bsr 2):3/integer>>;
+decode32hex_tail(<<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer>>) ->
+    <<
+        (decode32hex(C1)):5/integer,
+        (decode32hex(C2)):5/integer,
+        (decode32hex(C3)):5/integer,
+        (decode32hex(C4) bsr 4):1/integer
+    >>;
+decode32hex_tail(<<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer>>) ->
+    <<
+        (decode32hex(C1)):5/integer,
+        (decode32hex(C2)):5/integer,
+        (decode32hex(C3)):5/integer,
+        (decode32hex(C4)):5/integer,
+        (decode32hex(C5) bsr 1):4/integer
+    >>;
+decode32hex_tail(
+    <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
+        C7:8/integer>>
+) ->
+    <<
+        (decode32hex(C1)):5/integer,
+        (decode32hex(C2)):5/integer,
+        (decode32hex(C3)):5/integer,
+        (decode32hex(C4)):5/integer,
+        (decode32hex(C5)):5/integer,
+        (decode32hex(C6)):5/integer,
+        (decode32hex(C7) bsr 3):2/integer
+    >>;
+decode32hex_tail(_) ->
+    incorrect_padding.
 
 do_decode32(<<>>) ->
     <<>>;
 do_decode32(Bin) ->
-    Offset = decode_offset(Bin),
-    <<Main:Offset/binary-unit:64, Rest/binary>> = Bin,
-    Main1 = <<
+    Size = byte_size(Bin),
+    case Bin of
+        <<_:(Size - 1)/binary, $=>> -> do_decode32(Bin, (Size - 1) div 8);
+        _ when Size rem 8 =:= 0 -> decode32_groups(Bin, <<>>);
+        _ -> do_decode32(Bin, Size div 8)
+    end.
+
+do_decode32(Bin, Groups) ->
+    <<Main:Groups/binary-unit:64, Rest/binary>> = Bin,
+    case decode32_tail(Rest) of
+        incorrect_padding ->
+            %% A character outside the alphabet before the tail takes precedence
+            _ = decode32_groups(Main, <<>>),
+            error_info(Bin, incorrect_padding, ?FUNCTION_NAME);
+        Tail ->
+            decode32_groups(Main, Tail)
+    end.
+
+decode32_groups(
+    <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
+        C7:8/integer, C8:8/integer, C9:8/integer, C10:8/integer, C11:8/integer, C12:8/integer,
+        C13:8/integer, C14:8/integer, C15:8/integer, C16:8/integer, C17:8/integer, C18:8/integer,
+        C19:8/integer, C20:8/integer, C21:8/integer, C22:8/integer, C23:8/integer, C24:8/integer,
+        C25:8/integer, C26:8/integer, C27:8/integer, C28:8/integer, C29:8/integer, C30:8/integer,
+        C31:8/integer, C32:8/integer, Rest/binary>>,
+    Tail
+) when byte_size(Rest) =< 64 ->
+    <<
+        (decode32(C1)):5/integer,
+        (decode32(C2)):5/integer,
+        (decode32(C3)):5/integer,
+        (decode32(C4)):5/integer,
+        (decode32(C5)):5/integer,
+        (decode32(C6)):5/integer,
+        (decode32(C7)):5/integer,
+        (decode32(C8)):5/integer,
+        (decode32(C9)):5/integer,
+        (decode32(C10)):5/integer,
+        (decode32(C11)):5/integer,
+        (decode32(C12)):5/integer,
+        (decode32(C13)):5/integer,
+        (decode32(C14)):5/integer,
+        (decode32(C15)):5/integer,
+        (decode32(C16)):5/integer,
+        (decode32(C17)):5/integer,
+        (decode32(C18)):5/integer,
+        (decode32(C19)):5/integer,
+        (decode32(C20)):5/integer,
+        (decode32(C21)):5/integer,
+        (decode32(C22)):5/integer,
+        (decode32(C23)):5/integer,
+        (decode32(C24)):5/integer,
+        (decode32(C25)):5/integer,
+        (decode32(C26)):5/integer,
+        (decode32(C27)):5/integer,
+        (decode32(C28)):5/integer,
+        (decode32(C29)):5/integer,
+        (decode32(C30)):5/integer,
+        (decode32(C31)):5/integer,
+        (decode32(C32)):5/integer,
+        (decode32_groups(Rest, Tail))/bitstring
+    >>;
+decode32_groups(
+    <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
+        C7:8/integer, C8:8/integer, C9:8/integer, C10:8/integer, C11:8/integer, C12:8/integer,
+        C13:8/integer, C14:8/integer, C15:8/integer, C16:8/integer, C17:8/integer, C18:8/integer,
+        C19:8/integer, C20:8/integer, C21:8/integer, C22:8/integer, C23:8/integer, C24:8/integer>>,
+    Tail
+) ->
+    <<
+        (decode32(C1)):5/integer,
+        (decode32(C2)):5/integer,
+        (decode32(C3)):5/integer,
+        (decode32(C4)):5/integer,
+        (decode32(C5)):5/integer,
+        (decode32(C6)):5/integer,
+        (decode32(C7)):5/integer,
+        (decode32(C8)):5/integer,
+        (decode32(C9)):5/integer,
+        (decode32(C10)):5/integer,
+        (decode32(C11)):5/integer,
+        (decode32(C12)):5/integer,
+        (decode32(C13)):5/integer,
+        (decode32(C14)):5/integer,
+        (decode32(C15)):5/integer,
+        (decode32(C16)):5/integer,
+        (decode32(C17)):5/integer,
+        (decode32(C18)):5/integer,
+        (decode32(C19)):5/integer,
+        (decode32(C20)):5/integer,
+        (decode32(C21)):5/integer,
+        (decode32(C22)):5/integer,
+        (decode32(C23)):5/integer,
+        (decode32(C24)):5/integer,
+        Tail/bitstring
+    >>;
+decode32_groups(
+    <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
+        C7:8/integer, C8:8/integer, C9:8/integer, C10:8/integer, C11:8/integer, C12:8/integer,
+        C13:8/integer, C14:8/integer, C15:8/integer, C16:8/integer>>,
+    Tail
+) ->
+    <<
+        (decode32(C1)):5/integer,
+        (decode32(C2)):5/integer,
+        (decode32(C3)):5/integer,
+        (decode32(C4)):5/integer,
+        (decode32(C5)):5/integer,
+        (decode32(C6)):5/integer,
+        (decode32(C7)):5/integer,
+        (decode32(C8)):5/integer,
+        (decode32(C9)):5/integer,
+        (decode32(C10)):5/integer,
+        (decode32(C11)):5/integer,
+        (decode32(C12)):5/integer,
+        (decode32(C13)):5/integer,
+        (decode32(C14)):5/integer,
+        (decode32(C15)):5/integer,
+        (decode32(C16)):5/integer,
+        Tail/bitstring
+    >>;
+decode32_groups(
+    <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
+        C7:8/integer, C8:8/integer>>,
+    Tail
+) ->
+    <<
+        (decode32(C1)):5/integer,
+        (decode32(C2)):5/integer,
+        (decode32(C3)):5/integer,
+        (decode32(C4)):5/integer,
+        (decode32(C5)):5/integer,
+        (decode32(C6)):5/integer,
+        (decode32(C7)):5/integer,
+        (decode32(C8)):5/integer,
+        Tail/bitstring
+    >>;
+decode32_groups(<<>>, Tail) ->
+    Tail;
+decode32_groups(Groups, Tail) ->
+    Bin = <<
         <<
             (decode32(C1)):5/integer,
             (decode32(C2)):5/integer,
@@ -398,92 +873,134 @@ do_decode32(Bin) ->
             (decode32(C8)):5/integer
         >>
      || <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
-            C7:8/integer, C8:8/integer>> <= Main
+            C7:8/integer, C8:8/integer>> <= Groups
     >>,
-    case Rest of
-        <<C1:8/integer, C2:8/integer, 61/integer, 61/integer, 61/integer, 61/integer, 61/integer,
-            61/integer>> ->
-            <<Main1/bitstring, (decode32(C1)):5/integer, (decode32(C2) bsr 2):3/integer>>;
-        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, 61/integer, 61/integer,
-            61/integer, 61/integer>> ->
-            <<Main1/bitstring, (decode32(C1)):5/integer, (decode32(C2)):5/integer,
-                (decode32(C3)):5/integer, (decode32(C4) bsr 4):1/integer>>;
-        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, 61/integer,
-            61/integer, 61/integer>> ->
-            <<Main1/bitstring, (decode32(C1)):5/integer, (decode32(C2)):5/integer,
-                (decode32(C3)):5/integer, (decode32(C4)):5/integer,
-                (decode32(C5) bsr 1):4/integer>>;
-        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
-            C7:8/integer, 61/integer>> ->
-            <<Main1/bitstring, (decode32(C1)):5/integer, (decode32(C2)):5/integer,
-                (decode32(C3)):5/integer, (decode32(C4)):5/integer, (decode32(C5)):5/integer,
-                (decode32(C6)):5/integer, (decode32(C7) bsr 3):2/integer>>;
-        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
-            C7:8/integer, C8:8/integer>> ->
-            <<Main1/bitstring, (decode32(C1)):5/integer, (decode32(C2)):5/integer,
-                (decode32(C3)):5/integer, (decode32(C4)):5/integer, (decode32(C5)):5/integer,
-                (decode32(C6)):5/integer, (decode32(C7)):5/integer, (decode32(C8)):5/integer>>;
-        <<C1:8/integer, C2:8/integer>> ->
-            <<Main1/bitstring, (decode32(C1)):5/integer, (decode32(C2) bsr 2):3/integer>>;
-        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer>> ->
-            <<Main1/bitstring, (decode32(C1)):5/integer, (decode32(C2)):5/integer,
-                (decode32(C3)):5/integer, (decode32(C4) bsr 4):1/integer>>;
-        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer>> ->
-            <<Main1/bitstring, (decode32(C1)):5/integer, (decode32(C2)):5/integer,
-                (decode32(C3)):5/integer, (decode32(C4)):5/integer,
-                (decode32(C5) bsr 1):4/integer>>;
-        <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
-            C7:8/integer>> ->
-            <<Main1/bitstring, (decode32(C1)):5/integer, (decode32(C2)):5/integer,
-                (decode32(C3)):5/integer, (decode32(C4)):5/integer, (decode32(C5)):5/integer,
-                (decode32(C6)):5/integer, (decode32(C7) bsr 3):2/integer>>;
-        _ ->
-            error_info(Bin, incorrect_padding, ?FUNCTION_NAME)
+    <<Bin/binary, Tail/bitstring>>.
+
+decode32_tail(<<C1:8/integer, C2:8/integer, "======">>) ->
+    <<(decode32(C1)):5/integer, (decode32(C2) bsr 2):3/integer>>;
+decode32_tail(<<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, "====">>) ->
+    <<
+        (decode32(C1)):5/integer,
+        (decode32(C2)):5/integer,
+        (decode32(C3)):5/integer,
+        (decode32(C4) bsr 4):1/integer
+    >>;
+decode32_tail(<<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, "===">>) ->
+    <<
+        (decode32(C1)):5/integer,
+        (decode32(C2)):5/integer,
+        (decode32(C3)):5/integer,
+        (decode32(C4)):5/integer,
+        (decode32(C5) bsr 1):4/integer
+    >>;
+decode32_tail(
+    <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
+        C7:8/integer, "=">>
+) ->
+    <<
+        (decode32(C1)):5/integer,
+        (decode32(C2)):5/integer,
+        (decode32(C3)):5/integer,
+        (decode32(C4)):5/integer,
+        (decode32(C5)):5/integer,
+        (decode32(C6)):5/integer,
+        (decode32(C7) bsr 3):2/integer
+    >>;
+decode32_tail(<<C1:8/integer, C2:8/integer>>) ->
+    <<(decode32(C1)):5/integer, (decode32(C2) bsr 2):3/integer>>;
+decode32_tail(<<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer>>) ->
+    <<
+        (decode32(C1)):5/integer,
+        (decode32(C2)):5/integer,
+        (decode32(C3)):5/integer,
+        (decode32(C4) bsr 4):1/integer
+    >>;
+decode32_tail(<<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer>>) ->
+    <<
+        (decode32(C1)):5/integer,
+        (decode32(C2)):5/integer,
+        (decode32(C3)):5/integer,
+        (decode32(C4)):5/integer,
+        (decode32(C5) bsr 1):4/integer
+    >>;
+decode32_tail(
+    <<C1:8/integer, C2:8/integer, C3:8/integer, C4:8/integer, C5:8/integer, C6:8/integer,
+        C7:8/integer>>
+) ->
+    <<
+        (decode32(C1)):5/integer,
+        (decode32(C2)):5/integer,
+        (decode32(C3)):5/integer,
+        (decode32(C4)):5/integer,
+        (decode32(C5)):5/integer,
+        (decode32(C6)):5/integer,
+        (decode32(C7) bsr 3):2/integer
+    >>;
+decode32_tail(_) ->
+    incorrect_padding.
+
+padding(false, _) -> <<>>;
+padding(true, 1) -> <<"=">>;
+padding(true, 3) -> <<"===">>;
+padding(true, 4) -> <<"====">>;
+padding(true, 6) -> <<"======">>.
+
+%% Raises for the first octet outside the alphabet, the one decoding character by character stops
+%% at: a tail's padding only ever follows the characters it decodes.
+non_alphabetic(<<C:8/integer, Rest/binary>>, false) ->
+    case decode32(C) of
+        bad -> error_info(C, non_alphabetic_character, decode32);
+        _ -> non_alphabetic(Rest, false)
+    end;
+non_alphabetic(<<C:8/integer, Rest/binary>>, true) ->
+    case decode32hex(C) of
+        bad -> error_info(C, non_alphabetic_character, decode32hex);
+        _ -> non_alphabetic(Rest, true)
     end.
-
-maybe_pad(Acc, false, _) -> Acc;
-maybe_pad(Acc, true, 6) -> <<Acc/binary, "======">>;
-maybe_pad(Acc, true, 4) -> <<Acc/binary, "====">>;
-maybe_pad(Acc, true, 3) -> <<Acc/binary, "===">>;
-maybe_pad(Acc, true, 1) -> <<Acc/binary, "=">>.
-
-decode_offset(Bin) ->
-    (byte_size(Bin) + 7) div 8 - 1.
 
 error_info(Arg, Reason, FunctionName) ->
     erlang:error(Reason, Arg, [{error_info, #{module => ?MODULE, function => FunctionName}}]).
 
+%% The value of an octet, or `bad` if it is not in the alphabet. Upper and lower case decode alike.
 decode32(Byte) ->
-    try
-        element(
-            Byte - 50 + 1,
-            {26, 27, 28, 29, 30, 31, nil, nil, nil, nil, nil, nil, nil, nil, nil, 0, 1, 2, 3, 4, 5,
-                6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, nil,
-                nil, nil, nil, nil, nil, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
-                17, 18, 19, 20, 21, 22, 23, 24, 25}
-        )
-    of
-        nil -> error_info(Byte, non_alphabetic_character, ?FUNCTION_NAME);
-        Char -> Char
-    catch
-        error:_ -> error_info(Byte, non_alphabetic_character, ?FUNCTION_NAME)
-    end.
+    element(
+        Byte + 1,
+        {bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad,
+            bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad,
+            bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, 26, 27, 28,
+            29, 30, 31, bad, bad, bad, bad, bad, bad, bad, bad, bad, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+            10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, bad, bad, bad, bad, bad,
+            bad, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+            23, 24, 25, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad,
+            bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad,
+            bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad,
+            bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad,
+            bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad,
+            bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad,
+            bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad,
+            bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad}
+    ).
 
 decode32hex(Byte) ->
-    try
-        element(
-            Byte - 48 + 1,
-            {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, nil, nil, nil, nil, nil, nil, nil, 10, 11, 12, 13, 14,
-                15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, nil, nil, nil,
-                nil, nil, nil, nil, nil, nil, nil, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-                22, 23, 24, 25, 26, 27, 28, 29, 30, 31}
-        )
-    of
-        nil -> error_info(Byte, non_alphabetic_character, ?FUNCTION_NAME);
-        Char -> Char
-    catch
-        error:_ -> error_info(Byte, non_alphabetic_character, ?FUNCTION_NAME)
-    end.
+    element(
+        Byte + 1,
+        {bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad,
+            bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad,
+            bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, 0, 1, 2, 3, 4, 5, 6, 7,
+            8, 9, bad, bad, bad, bad, bad, bad, bad, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+            22, 23, 24, 25, 26, 27, 28, 29, 30, 31, bad, bad, bad, bad, bad, bad, bad, bad, bad,
+            bad, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+            31, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad,
+            bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad,
+            bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad,
+            bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad,
+            bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad,
+            bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad,
+            bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad,
+            bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad, bad,
+            bad}
+    ).
 
 encode32hexlower(Byte) ->
     element(
